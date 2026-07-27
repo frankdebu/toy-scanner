@@ -208,7 +208,8 @@ const CANONICAL_SIZE_ORDER=['small','medium','large','xlarge'];
 const W=160, H=120; // working resolution for detection
 const DIFF_THRESHOLD=40;
 const EMPTY_AREA_THRESHOLD=250;
-const STABLE_FRAMES_REQUIRED=6;
+const HISTORY_LENGTH=8; // frames considered in the rolling majority vote
+const REQUIRED_MATCHES=5; // how many of those frames must agree to commit a count
 const DOT_MATCH_THRESHOLD=60; // colour distance to count a pixel as a dot
 const DOT_MIN_PIXELS=5; // minimum matching pixels (at working resolution) to trust a dot detection
 // Toy colour matching uses HUE rather than raw RGB distance, since hue stays roughly
@@ -234,7 +235,8 @@ let currentTab='setup'; // which tab is displayed: 'setup' | 'inventory' | 'chec
 let tally={}; // "color|size" -> count
 let cart=[]; // {color,size,price,qty}
 let transactions=[];
-let stableFrames=0, lastKey=null;
+let detectionHistory=[]; // rolling window of recent per-frame detection keys
+let lastCountedKey=null; // prevents recounting the same still-in-frame object
 let lastScan=null; // {color,size,tallyKey or cartKey}
 let pendingCapture=null; // size name waiting for a calibration capture
 
@@ -594,7 +596,7 @@ function processFrame(){
   const scaleX=overlay.width/W, scaleY=overlay.height/H;
 
   if(mask.count<EMPTY_AREA_THRESHOLD){
-    stableFrames=0; lastKey=null;
+    detectionHistory=[]; lastCountedKey=null;
     document.getElementById('statusPill').textContent='scanning — waiting for object';
     return;
   }
@@ -602,7 +604,8 @@ function processFrame(){
   const {colorName, box, boxArea}=classifyColorAndSize(data, mask.fg);
 
   if(!colorName){
-    stableFrames=0; lastKey=null;
+    // A noisy single frame with no confident colour shouldn't wipe out a run of good
+    // reads — just skip voting this frame rather than resetting the whole history.
     overlayCtx.strokeStyle='#a3402f'; overlayCtx.lineWidth=2;
     overlayCtx.strokeRect(mask.minX*scaleX, mask.minY*scaleY, (mask.maxX-mask.minX)*scaleX, (mask.maxY-mask.minY)*scaleY);
     document.getElementById('statusPill').textContent='scanning — no toy colour detected';
@@ -628,11 +631,22 @@ function processFrame(){
   overlayCtx.fillStyle='#fff';
   overlayCtx.fillText(label, box.minX*scaleX+6, Math.max(14,box.minY*scaleY-7));
 
+  // Rolling-window majority vote: instead of requiring N identical frames in a row
+  // (which restarts on any single noisy frame), we require a key to win a majority
+  // within a short recent window — far more tolerant of the odd misread while still
+  // requiring genuine, repeated agreement before committing to a count.
   const key=colorName+'|'+(sizeName||'uncalibrated');
-  if(key===lastKey) stableFrames++; else { lastKey=key; stableFrames=1; }
+  detectionHistory.push(key);
+  if(detectionHistory.length>HISTORY_LENGTH) detectionHistory.shift();
 
-  if(stableFrames===STABLE_FRAMES_REQUIRED){
+  const tally={};
+  for(const k of detectionHistory) tally[k]=(tally[k]||0)+1;
+  let modeKey=null, modeCount=0;
+  for(const [k,c] of Object.entries(tally)){ if(c>modeCount){ modeCount=c; modeKey=k; } }
+
+  if(modeCount>=REQUIRED_MATCHES && modeKey!==lastCountedKey){
     document.getElementById('statusPill').textContent='counted: '+label;
+    lastCountedKey=modeKey;
     registerDetection(colorName, sizeName);
   }else{
     document.getElementById('statusPill').textContent='holding steady…';
