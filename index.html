@@ -83,27 +83,36 @@
 
 <div class="grid">
   <div>
+    <div class="card" id="setupCard">
+      <h2>Setup checklist</h2>
+      <div id="setupList"></div>
+      <div class="controls">
+        <button class="primary" id="btnToggleScan" onclick="toggleScanning()" disabled>Start scanning</button>
+      </div>
+      <p class="muted" id="setupHint" style="margin:8px 0 0;">Complete the steps below in order, then start scanning.</p>
+    </div>
+
     <div class="card">
-      <h2>Camera</h2>
+      <h2>1. Camera</h2>
       <div class="cam-wrap">
         <video id="video" autoplay playsinline muted class="hidden"></video>
         <canvas id="overlay"></canvas>
         <div class="status-pill" id="statusPill">camera off</div>
       </div>
       <div class="controls">
-        <button class="primary" id="btnStartCam" onclick="startCamera()">Start camera</button>
-        <button id="btnCaptureBg" onclick="captureBackground()" disabled>Capture empty background</button>
+        <button class="primary" id="btnStartCam" onclick="toggleCamera()">Start camera</button>
+        <button id="btnCaptureBg" onclick="captureBackground()" disabled>2. Capture empty background</button>
       </div>
     </div>
 
     <div class="card">
-      <h2>Config file</h2>
+      <h2>3. Config file</h2>
       <input type="file" id="configFile" accept=".csv" onchange="handleConfigFile(event)">
       <div class="config-status" id="configStatus">No config loaded yet.</div>
     </div>
 
     <div class="card" id="calibCard">
-      <h2>Calibrate sizes</h2>
+      <h2>4. Calibrate sizes</h2>
       <p class="muted" style="margin-top:-6px;">Hold up one example toy per size below, then click capture. Do this once per session (or load a saved calibration).</p>
       <div id="calibList"><p class="muted">Load a config file first.</p></div>
       <div class="controls">
@@ -224,6 +233,8 @@ window.onload=()=>{
   fetch('config.csv').then(r=>{ if(!r.ok) throw 0; return r.text(); })
     .then(text=>{ parseConfig(text); setConfigStatus(`Loaded ${config.length} rows from config.csv (auto).`, true); })
     .catch(()=>{});
+
+  updateSetupState();
 };
 
 function setMode(m){
@@ -238,6 +249,10 @@ function setMode(m){
 }
 
 /* ---------- camera ---------- */
+async function toggleCamera(){
+  if(stream){ stopCamera(); } else { await startCamera(); }
+}
+
 async function startCamera(){
   try{
     stream=await navigator.mediaDevices.getUserMedia({video:{width:640,height:480}, audio:false});
@@ -245,19 +260,79 @@ async function startCamera(){
     video.classList.remove('hidden');
     overlay.width=640; overlay.height=480;
     document.getElementById('statusPill').textContent='camera on — capture background next';
-    document.getElementById('btnCaptureBg').disabled=false;
-    document.getElementById('btnStartCam').disabled=true;
+    document.getElementById('btnStartCam').textContent='Stop camera';
+    updateSetupState();
   }catch(err){
     alert('Could not access camera: '+err.message+'\nMake sure this page is served over https:// or localhost.');
   }
 }
 
+function stopCamera(){
+  pauseScanning();
+  if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
+  video.classList.add('hidden');
+  backgroundData=null; // camera position/framing may change, so require a fresh background capture
+  document.getElementById('statusPill').textContent='camera off';
+  document.getElementById('btnStartCam').textContent='Start camera';
+  updateSetupState();
+}
+
 function captureBackground(){
+  if(!stream) return;
   workCtx.drawImage(video,0,0,W,H);
   backgroundData=workCtx.getImageData(0,0,W,H).data.slice();
-  document.getElementById('statusPill').textContent='scanning';
+  document.getElementById('statusPill').textContent='background captured';
+  updateSetupState();
+}
+
+/* ---------- scanning control ---------- */
+function canScan(){
+  return !!backgroundData && config.length>0 && calibrationOrder.length>0 && calibrationOrder.every(s=>calibration[s]);
+}
+
+function toggleScanning(){
+  if(detectionTimer) pauseScanning(); else beginScanning();
+}
+
+function beginScanning(){
+  if(!canScan()) return;
   if(detectionTimer) clearInterval(detectionTimer);
   detectionTimer=setInterval(processFrame,150);
+  document.getElementById('statusPill').textContent='scanning';
+  document.getElementById('btnToggleScan').textContent='Pause scanning';
+}
+
+function pauseScanning(){
+  if(detectionTimer){ clearInterval(detectionTimer); detectionTimer=null; }
+  const btn=document.getElementById('btnToggleScan');
+  if(btn) btn.textContent='Start scanning';
+  if(stream && backgroundData) document.getElementById('statusPill').textContent='paused';
+}
+
+/* ---------- setup checklist ---------- */
+function updateSetupState(){
+  const steps=[
+    {label:'Start the camera', done: !!stream},
+    {label:'Capture the empty background', done: !!backgroundData},
+    {label:'Load config.csv', done: config.length>0},
+    {label:'Calibrate all sizes', done: calibrationOrder.length>0 && calibrationOrder.every(s=>calibration[s])}
+  ];
+  document.getElementById('setupList').innerHTML=steps.map((s,i)=>`
+    <div class="calib-item">
+      <span>${i+1}. ${s.label}</span>
+      <span class="badge ${s.done?'done':'todo'}">${s.done?'done':'pending'}</span>
+    </div>`).join('');
+
+  document.getElementById('btnCaptureBg').disabled=!stream;
+
+  const ready=canScan();
+  const scanBtn=document.getElementById('btnToggleScan');
+  scanBtn.disabled=!ready && !detectionTimer;
+  document.getElementById('setupHint').textContent=ready||detectionTimer
+    ? 'All set — you can start scanning, and pause any time without losing setup.'
+    : 'Complete the steps above in order, then start scanning.';
+
+  renderCalibList();
 }
 
 /* ---------- config ---------- */
@@ -290,7 +365,7 @@ function parseConfig(text){
     ...allSizes.filter(s=>!CANONICAL_SIZE_ORDER.includes(s))
   ];
   calibration={};
-  renderCalibList();
+  updateSetupState();
 }
 
 function setConfigStatus(msg, ok){
@@ -319,7 +394,7 @@ function captureCalibration(size){
   const mask=foregroundMask(data);
   if(mask.count<EMPTY_AREA_THRESHOLD){ alert('No object detected in frame — hold the '+size+' example up and try again.'); return; }
   calibration[size]=mask.bboxArea;
-  renderCalibList();
+  updateSetupState();
 }
 
 function saveCalibration(){
@@ -331,7 +406,7 @@ function saveCalibration(){
 function handleCalibFile(evt){
   const file=evt.target.files[0]; if(!file) return;
   const reader=new FileReader();
-  reader.onload=e=>{ try{ calibration=JSON.parse(e.target.result); renderCalibList(); }catch(err){ alert('Could not read that calibration file.'); } };
+  reader.onload=e=>{ try{ calibration=JSON.parse(e.target.result); updateSetupState(); }catch(err){ alert('Could not read that calibration file.'); } };
   reader.readAsText(file);
 }
 
