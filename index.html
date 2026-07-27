@@ -1,0 +1,576 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Toy scanner</title>
+<style>
+  :root{
+    --bg:#f4f3ef; --card:#ffffff; --border:#dedad2; --text:#26241f;
+    --muted:#736f66; --accent:#3a6b58; --accent-bg:#e7efe9;
+    --danger:#a3402f; --danger-bg:#f6e8e4; --radius:10px;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    background:var(--bg); color:var(--text); padding:24px;
+  }
+  h1{font-size:20px; font-weight:600; margin:0 0 4px;}
+  .subtitle{color:var(--muted); font-size:13px; margin:0 0 20px;}
+  .tabs{display:flex; gap:8px; margin-bottom:16px;}
+  .tab{
+    padding:8px 16px; border-radius:var(--radius); border:1px solid var(--border);
+    background:var(--card); cursor:pointer; font-size:14px; font-weight:500;
+  }
+  .tab.active{background:var(--accent); color:#fff; border-color:var(--accent);}
+  .grid{display:grid; grid-template-columns:1.3fr 1fr; gap:16px; align-items:start;}
+  @media (max-width:800px){ .grid{grid-template-columns:1fr;} }
+  .card{
+    background:var(--card); border:1px solid var(--border); border-radius:var(--radius);
+    padding:16px; margin-bottom:16px;
+  }
+  .card h2{font-size:14px; font-weight:600; margin:0 0 12px;}
+  .cam-wrap{position:relative; background:#111; border-radius:var(--radius); overflow:hidden; aspect-ratio:4/3;}
+  video, canvas{width:100%; height:100%; object-fit:cover; display:block;}
+  #overlay{position:absolute; inset:0;}
+  .status-pill{
+    position:absolute; top:10px; right:10px; font-size:11px; padding:4px 10px;
+    border-radius:20px; background:rgba(0,0,0,0.55); color:#fff; z-index:5;
+  }
+  .controls{display:flex; gap:8px; margin-top:12px; flex-wrap:wrap;}
+  button{
+    padding:8px 14px; border-radius:var(--radius); border:1px solid var(--border);
+    background:var(--card); cursor:pointer; font-size:13px; font-weight:500; color:var(--text);
+  }
+  button:hover{background:#f0eee9;}
+  button.primary{background:var(--accent); color:#fff; border-color:var(--accent);}
+  button.primary:hover{opacity:0.9;}
+  button:disabled{opacity:0.4; cursor:not-allowed;}
+  select, input[type=file]{font-size:13px; padding:6px; border-radius:var(--radius); border:1px solid var(--border);}
+  table{width:100%; border-collapse:collapse; font-size:13px;}
+  th, td{text-align:left; padding:6px 4px; border-bottom:1px solid var(--border);}
+  th{color:var(--muted); font-weight:500; font-size:12px;}
+  .row{display:flex; justify-content:space-between; align-items:center; padding:8px 10px;
+       border:1px solid var(--border); border-radius:var(--radius); margin-bottom:6px; font-size:13px;}
+  .swatch{width:14px; height:14px; border-radius:50%; display:inline-block; margin-right:8px; border:1px solid rgba(0,0,0,0.15);}
+  .size-tag{font-size:11px; color:var(--muted); background:var(--bg); padding:2px 7px; border-radius:20px; margin-left:8px;}
+  .total-row{display:flex; justify-content:space-between; align-items:baseline;
+       margin-top:12px; padding-top:12px; border-top:1px solid var(--border);}
+  .total-row .amount{font-size:22px; font-weight:600;}
+  .muted{color:var(--muted); font-size:12px;}
+  .config-status{font-size:12px; margin-top:8px;}
+  .ok{color:var(--accent);}
+  .warn{color:var(--danger);}
+  .hidden{display:none !important;}
+  .calib-item{display:flex; justify-content:space-between; align-items:center; padding:6px 0; border-bottom:1px solid var(--border); font-size:13px;}
+  .calib-item:last-child{border-bottom:none;}
+  .badge{font-size:11px; padding:2px 8px; border-radius:20px;}
+  .badge.done{background:var(--accent-bg); color:var(--accent);}
+  .badge.todo{background:var(--danger-bg); color:var(--danger);}
+  .last-scan{display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;}
+  .last-scan .left{display:flex; align-items:center;}
+</style>
+</head>
+<body>
+
+<h1>Toy scanner</h1>
+<p class="subtitle">Hold a toy in front of the camera. Colour and size are detected automatically and matched against config.csv.</p>
+
+<div class="tabs">
+  <div class="tab active" id="tab-inventory" onclick="setMode('inventory')">Inventory</div>
+  <div class="tab" id="tab-checkout" onclick="setMode('checkout')">Checkout</div>
+</div>
+
+<div class="grid">
+  <div>
+    <div class="card">
+      <h2>Camera</h2>
+      <div class="cam-wrap">
+        <video id="video" autoplay playsinline muted class="hidden"></video>
+        <canvas id="overlay"></canvas>
+        <div class="status-pill" id="statusPill">camera off</div>
+      </div>
+      <div class="controls">
+        <button class="primary" id="btnStartCam" onclick="startCamera()">Start camera</button>
+        <button id="btnCaptureBg" onclick="captureBackground()" disabled>Capture empty background</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Config file</h2>
+      <input type="file" id="configFile" accept=".csv" onchange="handleConfigFile(event)">
+      <div class="config-status" id="configStatus">No config loaded yet.</div>
+    </div>
+
+    <div class="card" id="calibCard">
+      <h2>Calibrate sizes</h2>
+      <p class="muted" style="margin-top:-6px;">Hold up one example toy per size below, then click capture. Do this once per session (or load a saved calibration).</p>
+      <div id="calibList"><p class="muted">Load a config file first.</p></div>
+      <div class="controls">
+        <button onclick="saveCalibration()">Save calibration</button>
+        <label style="align-self:center;">
+          <span class="muted">Load calibration</span>
+          <input type="file" id="calibFile" accept=".json" onchange="handleCalibFile(event)">
+        </label>
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <div class="card" id="lastScanCard" style="display:none;">
+      <h2>Last scanned</h2>
+      <div class="last-scan">
+        <div class="left">
+          <span class="swatch" id="lastSwatch"></span>
+          <span id="lastLabel">—</span>
+          <span class="size-tag" id="lastSizeTag"></span>
+        </div>
+        <div>
+          <span class="muted" style="margin-right:6px;">Not right?</span>
+          <select id="lastSizeSelect" onchange="overrideLastScan(this.value)"></select>
+        </div>
+      </div>
+      <p class="muted" id="dotInstruction" style="margin:10px 0 0;"></p>
+    </div>
+
+    <div class="card" id="inventoryPanel">
+      <h2>Counted this session</h2>
+      <div id="tallyList"><p class="muted">No objects counted yet.</p></div>
+      <div class="controls">
+        <button onclick="resetTally()">Reset session</button>
+        <button class="primary" onclick="exportInventoryCsv()">Export CSV</button>
+      </div>
+    </div>
+
+    <div class="card hidden" id="checkoutPanel">
+      <h2>Cart</h2>
+      <div id="cartList"><p class="muted">No items scanned yet.</p></div>
+      <div class="total-row">
+        <span class="muted">Total (AUD)</span>
+        <span class="amount" id="cartTotal">$0.00</span>
+      </div>
+      <div class="controls">
+        <button onclick="clearCart()">Clear cart</button>
+        <button class="primary" onclick="completeSale()">Complete sale</button>
+      </div>
+    </div>
+
+    <div class="card hidden" id="historyPanel">
+      <h2>Transaction history (this session)</h2>
+      <table id="historyTable">
+        <thead><tr><th>Time</th><th>Items</th><th>Total</th></tr></thead>
+        <tbody id="historyBody"><tr><td colspan="3" class="muted">No sales yet.</td></tr></tbody>
+      </table>
+      <div class="controls">
+        <button onclick="exportHistoryCsv()">Download history CSV</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ---------- constants ---------- */
+const TOY_COLORS={
+  red:[210,40,40], blue:[40,80,210], green:[50,150,60],
+  yellow:[220,200,40], orange:[220,120,30], purple:[120,50,150]
+};
+// Reserved colour for override dots. Must NOT be one of the TOY_COLORS above.
+// One reserved dot colour per size — the dot's COLOUR tells the app the size directly,
+// so only ever one dot is needed regardless of how many size tiers you have.
+// These must be visually distinct from both your six toy colours AND from common toy
+// body colours generally (e.g. avoid plain white/black — see user manual). Fluorescent/
+// neon tones work well since moulded toy plastic is rarely made in those exact shades.
+// If a reserved colour still clashes with a specific toy, skip the dot for that item and
+// use the dropdown correction instead.
+const SIZE_DOT_COLORS={
+  small:  {name:'neon pink',   rgb:[255,20,147]},
+  medium: {name:'neon green',  rgb:[57,255,20]},
+  large:  {name:'neon orange', rgb:[255,95,15]},
+  xlarge: {name:'neon yellow', rgb:[255,250,25]}
+};
+const CANONICAL_SIZE_ORDER=['small','medium','large','xlarge'];
+
+const W=160, H=120; // working resolution for detection
+const DIFF_THRESHOLD=40;
+const EMPTY_AREA_THRESHOLD=250;
+const STABLE_FRAMES_REQUIRED=6;
+const DOT_MATCH_THRESHOLD=60; // colour distance to count a pixel as a dot
+const DOT_MIN_PIXELS=5; // minimum matching pixels (at working resolution) to trust a dot detection
+
+/* ---------- state ---------- */
+let video, overlay, overlayCtx, workCanvas, workCtx;
+let stream=null, backgroundData=null, detectionTimer=null;
+let config=[]; // {color,size,price}
+let sizesByColor={}; // color -> [size,...] in config order
+let calibrationOrder=[]; // unique size names, canonical order first
+let calibration={}; // size -> reference area
+let mode='inventory';
+let tally={}; // "color|size" -> count
+let cart=[]; // {color,size,price,qty}
+let transactions=[];
+let stableFrames=0, lastKey=null;
+let lastScan=null; // {color,size,tallyKey or cartKey}
+let pendingCapture=null; // size name waiting for a calibration capture
+
+/* ---------- setup ---------- */
+window.onload=()=>{
+  video=document.getElementById('video');
+  overlay=document.getElementById('overlay');
+  overlayCtx=overlay.getContext('2d');
+  workCanvas=document.createElement('canvas');
+  workCanvas.width=W; workCanvas.height=H;
+  workCtx=workCanvas.getContext('2d', {willReadFrequently:true});
+
+  fetch('config.csv').then(r=>{ if(!r.ok) throw 0; return r.text(); })
+    .then(text=>{ parseConfig(text); setConfigStatus(`Loaded ${config.length} rows from config.csv (auto).`, true); })
+    .catch(()=>{});
+};
+
+function setMode(m){
+  mode=m;
+  document.getElementById('tab-inventory').classList.toggle('active', m==='inventory');
+  document.getElementById('tab-checkout').classList.toggle('active', m==='checkout');
+  document.getElementById('inventoryPanel').classList.toggle('hidden', m!=='inventory');
+  document.getElementById('checkoutPanel').classList.toggle('hidden', m!=='checkout');
+  document.getElementById('historyPanel').classList.toggle('hidden', m!=='checkout');
+  document.getElementById('lastScanCard').style.display='none';
+  lastScan=null;
+}
+
+/* ---------- camera ---------- */
+async function startCamera(){
+  try{
+    stream=await navigator.mediaDevices.getUserMedia({video:{width:640,height:480}, audio:false});
+    video.srcObject=stream;
+    video.classList.remove('hidden');
+    overlay.width=640; overlay.height=480;
+    document.getElementById('statusPill').textContent='camera on — capture background next';
+    document.getElementById('btnCaptureBg').disabled=false;
+    document.getElementById('btnStartCam').disabled=true;
+  }catch(err){
+    alert('Could not access camera: '+err.message+'\nMake sure this page is served over https:// or localhost.');
+  }
+}
+
+function captureBackground(){
+  workCtx.drawImage(video,0,0,W,H);
+  backgroundData=workCtx.getImageData(0,0,W,H).data.slice();
+  document.getElementById('statusPill').textContent='scanning';
+  if(detectionTimer) clearInterval(detectionTimer);
+  detectionTimer=setInterval(processFrame,150);
+}
+
+/* ---------- config ---------- */
+function handleConfigFile(evt){
+  const file=evt.target.files[0]; if(!file) return;
+  const reader=new FileReader();
+  reader.onload=e=>{ parseConfig(e.target.result); setConfigStatus(`Loaded ${config.length} rows from ${file.name}.`, true); };
+  reader.readAsText(file);
+}
+
+function parseConfig(text){
+  const lines=text.trim().split('\n');
+  const header=lines[0].split(',').map(s=>s.trim());
+  config=lines.slice(1).filter(l=>l.trim().length).map(line=>{
+    const cells=line.split(',').map(s=>s.trim());
+    const row={}; header.forEach((h,i)=>row[h]=cells[i]);
+    row.price=parseFloat(row.price);
+    return row;
+  });
+
+  sizesByColor={};
+  config.forEach(r=>{
+    if(!sizesByColor[r.color]) sizesByColor[r.color]=[];
+    if(!sizesByColor[r.color].includes(r.size)) sizesByColor[r.color].push(r.size);
+  });
+
+  const allSizes=[...new Set(config.map(r=>r.size))];
+  calibrationOrder=[
+    ...CANONICAL_SIZE_ORDER.filter(s=>allSizes.includes(s)),
+    ...allSizes.filter(s=>!CANONICAL_SIZE_ORDER.includes(s))
+  ];
+  calibration={};
+  renderCalibList();
+}
+
+function setConfigStatus(msg, ok){
+  const el=document.getElementById('configStatus');
+  el.textContent=msg; el.className='config-status '+(ok?'ok':'warn');
+}
+
+/* ---------- calibration ---------- */
+function renderCalibList(){
+  const el=document.getElementById('calibList');
+  if(!calibrationOrder.length){ el.innerHTML='<p class="muted">Load a config file first.</p>'; return; }
+  el.innerHTML=calibrationOrder.map(size=>`
+    <div class="calib-item">
+      <span>${size}</span>
+      <span>
+        <span class="badge ${calibration[size]?'done':'todo'}">${calibration[size]?'captured':'not captured'}</span>
+        <button onclick="captureCalibration('${size}')" ${!backgroundData?'disabled title="Capture background first"':''}>Capture example</button>
+      </span>
+    </div>`).join('');
+}
+
+function captureCalibration(size){
+  if(!backgroundData){ alert('Capture the empty background first.'); return; }
+  workCtx.drawImage(video,0,0,W,H);
+  const data=workCtx.getImageData(0,0,W,H).data;
+  const mask=foregroundMask(data);
+  if(mask.count<EMPTY_AREA_THRESHOLD){ alert('No object detected in frame — hold the '+size+' example up and try again.'); return; }
+  calibration[size]=mask.bboxArea;
+  renderCalibList();
+}
+
+function saveCalibration(){
+  const blob=new Blob([JSON.stringify(calibration,null,2)], {type:'application/json'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='calibration.json'; a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function handleCalibFile(evt){
+  const file=evt.target.files[0]; if(!file) return;
+  const reader=new FileReader();
+  reader.onload=e=>{ try{ calibration=JSON.parse(e.target.result); renderCalibList(); }catch(err){ alert('Could not read that calibration file.'); } };
+  reader.readAsText(file);
+}
+
+/* ---------- detection ---------- */
+function foregroundMask(data){
+  let minX=W, minY=H, maxX=0, maxY=0, count=0, sumR=0, sumG=0, sumB=0;
+  const fg=new Uint8Array(W*H);
+  for(let y=0;y<H;y++){
+    for(let x=0;x<W;x++){
+      const idx=y*W+x, i=idx*4;
+      const dr=data[i]-backgroundData[i], dg=data[i+1]-backgroundData[i+1], db=data[i+2]-backgroundData[i+2];
+      const diff=Math.sqrt(dr*dr+dg*dg+db*db);
+      if(diff>DIFF_THRESHOLD){
+        fg[idx]=1; count++; sumR+=data[i]; sumG+=data[i+1]; sumB+=data[i+2];
+        if(x<minX)minX=x; if(x>maxX)maxX=x; if(y<minY)minY=y; if(y>maxY)maxY=y;
+      }
+    }
+  }
+  return {fg, count, minX, minY, maxX, maxY, bboxArea:(maxX-minX)*(maxY-minY), avgColor:count?[sumR/count,sumG/count,sumB/count]:[0,0,0]};
+}
+
+function detectDotSize(data, minX, minY, maxX, maxY){
+  // Counts pixels within the bbox matching each reserved size-colour; returns whichever
+  // size has the most matching pixels, as long as it clears the minimum pixel count.
+  const counts={};
+  for(const size in SIZE_DOT_COLORS) counts[size]=0;
+  for(let y=minY;y<=maxY;y++){
+    for(let x=minX;x<=maxX;x++){
+      const i=(y*W+x)*4;
+      for(const [size, dot] of Object.entries(SIZE_DOT_COLORS)){
+        const d=Math.sqrt((data[i]-dot.rgb[0])**2+(data[i+1]-dot.rgb[1])**2+(data[i+2]-dot.rgb[2])**2);
+        if(d<DOT_MATCH_THRESHOLD) counts[size]++;
+      }
+    }
+  }
+  let best=null, bestCount=0;
+  for(const [size,count] of Object.entries(counts)){
+    if(count>bestCount){ bestCount=count; best=size; }
+  }
+  return bestCount>=DOT_MIN_PIXELS ? best : null;
+}
+
+function nearestColor(rgb){
+  let best=null, bestDist=Infinity;
+  for(const [name, ref] of Object.entries(TOY_COLORS)){
+    const d=Math.sqrt((rgb[0]-ref[0])**2+(rgb[1]-ref[1])**2+(rgb[2]-ref[2])**2);
+    if(d<bestDist){ bestDist=d; best=name; }
+  }
+  return best;
+}
+
+function nearestCalibratedSize(area){
+  const entries=Object.entries(calibration);
+  if(!entries.length) return null;
+  let best=null, bestDist=Infinity;
+  for(const [size, refArea] of entries){
+    const d=Math.abs(area-refArea);
+    if(d<bestDist){ bestDist=d; best=size; }
+  }
+  return best;
+}
+
+function processFrame(){
+  if(!backgroundData) return;
+  workCtx.drawImage(video,0,0,W,H);
+  const data=workCtx.getImageData(0,0,W,H).data;
+  const mask=foregroundMask(data);
+
+  overlayCtx.clearRect(0,0,overlay.width,overlay.height);
+  const scaleX=overlay.width/W, scaleY=overlay.height/H;
+
+  if(mask.count<EMPTY_AREA_THRESHOLD){
+    stableFrames=0; lastKey=null;
+    document.getElementById('statusPill').textContent='scanning — waiting for object';
+    return;
+  }
+
+  const colorName=nearestColor(mask.avgColor);
+  const validSizes=sizesByColor[colorName]||[];
+  const dotSize=detectDotSize(data, mask.minX, mask.minY, mask.maxX, mask.maxY);
+  let sizeName, sizeSource;
+  if(dotSize && validSizes.includes(dotSize)){
+    sizeName=dotSize; sizeSource='dot';
+  }else{
+    sizeName=nearestCalibratedSize(mask.bboxArea); sizeSource='auto';
+  }
+
+  const label=sizeName? `${colorName} · ${sizeName}` : `${colorName} · uncalibrated`;
+  overlayCtx.strokeStyle='#3a6b58'; overlayCtx.lineWidth=2;
+  overlayCtx.strokeRect(mask.minX*scaleX, mask.minY*scaleY, (mask.maxX-mask.minX)*scaleX, (mask.maxY-mask.minY)*scaleY);
+  overlayCtx.font='13px sans-serif';
+  const textWidth=overlayCtx.measureText(label).width+12;
+  overlayCtx.fillStyle='rgba(58,107,88,0.9)';
+  overlayCtx.fillRect(mask.minX*scaleX, Math.max(0,mask.minY*scaleY-22), textWidth, 20);
+  overlayCtx.fillStyle='#fff';
+  overlayCtx.fillText(label, mask.minX*scaleX+6, Math.max(14,mask.minY*scaleY-7));
+
+  const key=colorName+'|'+(sizeName||'uncalibrated');
+  if(key===lastKey) stableFrames++; else { lastKey=key; stableFrames=1; }
+
+  if(stableFrames===STABLE_FRAMES_REQUIRED){
+    document.getElementById('statusPill').textContent='counted: '+label;
+    registerDetection(colorName, sizeName);
+  }else{
+    document.getElementById('statusPill').textContent='holding steady…';
+  }
+}
+
+/* ---------- registering a detection ---------- */
+function priceFor(color,size){
+  const row=config.find(r=>r.color===color && r.size===size);
+  return row? row.price : null;
+}
+
+function registerDetection(color,size){
+  if(!size){ alert('Size not yet calibrated — see the Calibrate sizes panel.'); return; }
+  if(mode==='inventory'){
+    const key=color+'|'+size;
+    tally[key]=(tally[key]||0)+1;
+    renderTally();
+    lastScan={type:'tally', key, color, size};
+  }else{
+    const price=priceFor(color,size)||0;
+    let line=cart.find(c=>c.color===color && c.size===size);
+    if(line) line.qty++; else { line={color,size,price,qty:1}; cart.push(line); }
+    renderCart();
+    lastScan={type:'cart', color, size};
+  }
+  showLastScan(color,size);
+}
+
+/* ---------- last-scan correction ---------- */
+function showLastScan(color,size){
+  const card=document.getElementById('lastScanCard');
+  card.style.display='block';
+  document.getElementById('lastSwatch').style.background='rgb('+TOY_COLORS[color].join(',')+')';
+  document.getElementById('lastLabel').textContent=color;
+  document.getElementById('lastSizeTag').textContent=size;
+  const select=document.getElementById('lastSizeSelect');
+  const options=sizesByColor[color]||[];
+  select.innerHTML=options.map(s=>`<option value="${s}" ${s===size?'selected':''}>${s}</option>`).join('');
+  document.getElementById('dotInstruction').textContent='';
+}
+
+function overrideLastScan(newSize){
+  if(!lastScan) return;
+  const {color}=lastScan;
+  const oldSize=lastScan.size;
+  if(newSize===oldSize) return;
+
+  if(lastScan.type==='tally'){
+    const oldKey=color+'|'+oldSize, newKey=color+'|'+newSize;
+    tally[oldKey]=(tally[oldKey]||1)-1; if(tally[oldKey]<=0) delete tally[oldKey];
+    tally[newKey]=(tally[newKey]||0)+1;
+    lastScan.key=newKey; lastScan.size=newSize;
+    renderTally();
+  }else{
+    let oldLine=cart.find(c=>c.color===color && c.size===oldSize);
+    if(oldLine){ oldLine.qty--; if(oldLine.qty<=0) cart=cart.filter(c=>c!==oldLine); }
+    const price=priceFor(color,newSize)||0;
+    let newLine=cart.find(c=>c.color===color && c.size===newSize);
+    if(newLine) newLine.qty++; else cart.push({color,size:newSize,price,qty:1});
+    lastScan.size=newSize;
+    renderCart();
+  }
+
+  document.getElementById('lastSizeTag').textContent=newSize;
+  const dot=SIZE_DOT_COLORS[newSize];
+  document.getElementById('dotInstruction').textContent=dot
+    ? `Tip: stick a ${dot.name} dot on this item so it scans as "${newSize}" automatically next time. If ${dot.name} is too close to this toy's own colour, skip the dot and just use this dropdown again next time.`
+    : `No reserved dot colour is set up for "${newSize}" — use this dropdown to correct it each time.`;
+}
+
+/* ---------- inventory ---------- */
+function renderTally(){
+  const el=document.getElementById('tallyList');
+  const keys=Object.keys(tally);
+  if(!keys.length){ el.innerHTML='<p class="muted">No objects counted yet.</p>'; return; }
+  el.innerHTML=keys.map(k=>{
+    const [color,size]=k.split('|');
+    return `<div class="row">
+      <span><span class="swatch" style="background:rgb(${TOY_COLORS[color].join(',')})"></span>${color}<span class="size-tag">${size}</span></span>
+      <span style="font-weight:600;">${tally[k]}</span>
+    </div>`;
+  }).join('');
+}
+
+function resetTally(){ tally={}; renderTally(); document.getElementById('lastScanCard').style.display='none'; lastScan=null; }
+
+function exportInventoryCsv(){
+  const rows=[['color','size','count']];
+  Object.entries(tally).forEach(([k,count])=>{ const [color,size]=k.split('|'); rows.push([color,size,count]); });
+  downloadCsv(rows,'inventory.csv');
+}
+
+/* ---------- checkout ---------- */
+function renderCart(){
+  const el=document.getElementById('cartList');
+  if(!cart.length){ el.innerHTML='<p class="muted">No items scanned yet.</p>'; document.getElementById('cartTotal').textContent=formatAud(0); return; }
+  el.innerHTML=cart.map(c=>`
+    <div class="row">
+      <span><span class="swatch" style="background:rgb(${TOY_COLORS[c.color].join(',')})"></span>${c.color}<span class="size-tag">${c.size}</span> x${c.qty}</span>
+      <span>${formatAud(c.price*c.qty)}</span>
+    </div>`).join('');
+  document.getElementById('cartTotal').textContent=formatAud(cartTotal());
+}
+
+function cartTotal(){ return cart.reduce((s,c)=>s+c.price*c.qty,0); }
+function clearCart(){ cart=[]; renderCart(); document.getElementById('lastScanCard').style.display='none'; lastScan=null; }
+
+function completeSale(){
+  if(!cart.length) return;
+  const total=cartTotal();
+  const itemsSummary=cart.map(c=>`${c.color} ${c.size} x${c.qty}`).join('; ');
+  transactions.push({time:new Date().toLocaleString('en-AU'), itemsSummary, total});
+  renderHistory();
+  clearCart();
+}
+
+function renderHistory(){
+  const body=document.getElementById('historyBody');
+  if(!transactions.length){ body.innerHTML='<tr><td colspan="3" class="muted">No sales yet.</td></tr>'; return; }
+  body.innerHTML=transactions.map(t=>`<tr><td>${t.time}</td><td>${t.itemsSummary}</td><td>${formatAud(t.total)}</td></tr>`).join('');
+}
+
+function exportHistoryCsv(){
+  const rows=[['time','items','total_aud'], ...transactions.map(t=>[t.time,t.itemsSummary,t.total.toFixed(2)])];
+  downloadCsv(rows,'transactions.csv');
+}
+
+/* ---------- helpers ---------- */
+function formatAud(n){ return n.toLocaleString('en-AU', {style:'currency', currency:'AUD'}); }
+
+function downloadCsv(rows, filename){
+  const csv=rows.map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
+  const blob=new Blob([csv], {type:'text/csv'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=filename; a.click();
+  URL.revokeObjectURL(a.href);
+}
+</script>
+</body>
+</html>
