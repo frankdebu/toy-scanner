@@ -211,8 +211,15 @@ const EMPTY_AREA_THRESHOLD=250;
 const STABLE_FRAMES_REQUIRED=6;
 const DOT_MATCH_THRESHOLD=60; // colour distance to count a pixel as a dot
 const DOT_MIN_PIXELS=5; // minimum matching pixels (at working resolution) to trust a dot detection
-const COLOR_MATCH_THRESHOLD=70; // colour distance to count a foreground pixel as "this toy colour"
-const MIN_COLOR_PIXELS=150; // minimum colour-matched pixels to confidently classify a colour
+// Toy colour matching uses HUE rather than raw RGB distance, since hue stays roughly
+// consistent as lighting/brightness changes, whereas RGB distance is thrown off easily
+// by shadows or warm/cool lighting. Saturation/value minimums filter out near-grey,
+// near-black, near-white, or skin-tone-ish pixels so they don't get force-matched to a
+// colour they don't really resemble.
+const HUE_MATCH_THRESHOLD=30; // degrees of hue difference to still count as a match
+const MIN_SATURATION=0.28; // 0-1, below this a pixel is too washed-out to classify
+const MIN_VALUE=0.18; // 0-1, below this a pixel is too dark to classify
+const MIN_COLOR_PIXELS=100; // minimum colour-matched pixels to confidently classify a colour
 
 /* ---------- state ---------- */
 let video, overlay, overlayCtx, workCanvas, workCtx;
@@ -500,12 +507,40 @@ function detectDotSize(data, minX, minY, maxX, maxY){
   return bestCount>=DOT_MIN_PIXELS ? best : null;
 }
 
+function rgbToHsv(r,g,b){
+  r/=255; g/=255; b/=255;
+  const max=Math.max(r,g,b), min=Math.min(r,g,b), d=max-min;
+  let h=0;
+  if(d!==0){
+    if(max===r) h=((g-b)/d)%6;
+    else if(max===g) h=(b-r)/d+2;
+    else h=(r-g)/d+4;
+    h*=60;
+    if(h<0) h+=360;
+  }
+  return {h, s: max===0?0:d/max, v: max};
+}
+
+function hueDist(h1,h2){
+  const d=Math.abs(h1-h2);
+  return Math.min(d, 360-d);
+}
+
+// Reference hue for each toy colour, derived once from its representative RGB above.
+const TOY_HUES={};
+for(const [name, rgb] of Object.entries(TOY_COLORS)){
+  TOY_HUES[name]=rgbToHsv(rgb[0], rgb[1], rgb[2]).h;
+}
+
 function nearestColorWithDist(rgb){
+  const {h, s, v}=rgbToHsv(rgb[0], rgb[1], rgb[2]);
+  if(s<MIN_SATURATION || v<MIN_VALUE) return {name:null, dist:Infinity};
   let best=null, bestDist=Infinity;
-  for(const [name, ref] of Object.entries(TOY_COLORS)){
-    const d=Math.sqrt((rgb[0]-ref[0])**2+(rgb[1]-ref[1])**2+(rgb[2]-ref[2])**2);
+  for(const [name, refHue] of Object.entries(TOY_HUES)){
+    const d=hueDist(h, refHue);
     if(d<bestDist){ bestDist=d; best=name; }
   }
+  if(bestDist>HUE_MATCH_THRESHOLD) return {name:null, dist:Infinity};
   return {name:best, dist:bestDist};
 }
 
@@ -521,8 +556,8 @@ function classifyColorAndSize(data, fg){
       const idx=y*W+x;
       if(!fg[idx]) continue;
       const i=idx*4;
-      const {name, dist}=nearestColorWithDist([data[i], data[i+1], data[i+2]]);
-      if(dist<COLOR_MATCH_THRESHOLD){
+      const {name}=nearestColorWithDist([data[i], data[i+1], data[i+2]]);
+      if(name){
         counts[name]++;
         const b=boxes[name];
         if(x<b.minX)b.minX=x; if(x>b.maxX)b.maxX=x;
