@@ -211,6 +211,8 @@ const EMPTY_AREA_THRESHOLD=250;
 const STABLE_FRAMES_REQUIRED=6;
 const DOT_MATCH_THRESHOLD=60; // colour distance to count a pixel as a dot
 const DOT_MIN_PIXELS=5; // minimum matching pixels (at working resolution) to trust a dot detection
+const COLOR_MATCH_THRESHOLD=70; // colour distance to count a foreground pixel as "this toy colour"
+const MIN_COLOR_PIXELS=150; // minimum colour-matched pixels to confidently classify a colour
 
 /* ---------- state ---------- */
 let video, overlay, overlayCtx, workCanvas, workCtx;
@@ -437,7 +439,12 @@ function captureCalibration(size){
   const data=workCtx.getImageData(0,0,W,H).data;
   const mask=foregroundMask(data);
   if(mask.count<EMPTY_AREA_THRESHOLD){ alert('No object detected in frame — hold the '+size+' example up and try again.'); return; }
-  calibration[size]=mask.count;
+  const {colorName, boxArea}=classifyColorAndSize(data, mask.fg);
+  if(!colorName){
+    alert('Could not clearly identify the toy\'s colour — try better lighting, or hold the toy so more of its coloured surface faces the camera (away from your hand).');
+    return;
+  }
+  calibration[size]=boxArea;
   updateSetupState();
 }
 
@@ -493,13 +500,42 @@ function detectDotSize(data, minX, minY, maxX, maxY){
   return bestCount>=DOT_MIN_PIXELS ? best : null;
 }
 
-function nearestColor(rgb){
+function nearestColorWithDist(rgb){
   let best=null, bestDist=Infinity;
   for(const [name, ref] of Object.entries(TOY_COLORS)){
     const d=Math.sqrt((rgb[0]-ref[0])**2+(rgb[1]-ref[1])**2+(rgb[2]-ref[2])**2);
     if(d<bestDist){ bestDist=d; best=name; }
   }
-  return best;
+  return {name:best, dist:bestDist};
+}
+
+// Classifies colour AND measures size using only the foreground pixels that closely
+// match one of the six toy colours — this deliberately excludes a hand/arm holding the
+// toy (skin tone doesn't closely match any saturated toy colour), so the resulting pixel
+// count reflects the toy's own footprint rather than hand+toy combined.
+function classifyColorAndSize(data, fg){
+  const counts={}; const boxes={};
+  for(const c in TOY_COLORS){ counts[c]=0; boxes[c]={minX:W, minY:H, maxX:0, maxY:0}; }
+  for(let y=0;y<H;y++){
+    for(let x=0;x<W;x++){
+      const idx=y*W+x;
+      if(!fg[idx]) continue;
+      const i=idx*4;
+      const {name, dist}=nearestColorWithDist([data[i], data[i+1], data[i+2]]);
+      if(dist<COLOR_MATCH_THRESHOLD){
+        counts[name]++;
+        const b=boxes[name];
+        if(x<b.minX)b.minX=x; if(x>b.maxX)b.maxX=x;
+        if(y<b.minY)b.minY=y; if(y>b.maxY)b.maxY=y;
+      }
+    }
+  }
+  let best=null, bestCount=0;
+  for(const [name, count] of Object.entries(counts)){ if(count>bestCount){ bestCount=count; best=name; } }
+  if(bestCount<MIN_COLOR_PIXELS) return { colorName:null, colorCount:0, box:null, boxArea:0 };
+  const b=boxes[best];
+  const boxArea=(b.maxX-b.minX+1)*(b.maxY-b.minY+1);
+  return { colorName:best, colorCount:bestCount, box:b, boxArea };
 }
 
 function nearestCalibratedSize(area){
@@ -528,25 +564,34 @@ function processFrame(){
     return;
   }
 
-  const colorName=nearestColor(mask.avgColor);
+  const {colorName, box, boxArea}=classifyColorAndSize(data, mask.fg);
+
+  if(!colorName){
+    stableFrames=0; lastKey=null;
+    overlayCtx.strokeStyle='#a3402f'; overlayCtx.lineWidth=2;
+    overlayCtx.strokeRect(mask.minX*scaleX, mask.minY*scaleY, (mask.maxX-mask.minX)*scaleX, (mask.maxY-mask.minY)*scaleY);
+    document.getElementById('statusPill').textContent='scanning — no toy colour detected';
+    return;
+  }
+
   const validSizes=sizesByColor[colorName]||[];
-  const dotSize=detectDotSize(data, mask.minX, mask.minY, mask.maxX, mask.maxY);
+  const dotSize=detectDotSize(data, box.minX, box.minY, box.maxX, box.maxY);
   let sizeName, sizeSource;
   if(dotSize && validSizes.includes(dotSize)){
     sizeName=dotSize; sizeSource='dot';
   }else{
-    sizeName=nearestCalibratedSize(mask.count); sizeSource='auto';
+    sizeName=nearestCalibratedSize(boxArea); sizeSource='auto';
   }
 
   const label=sizeName? `${colorName} · ${sizeName}` : `${colorName} · uncalibrated`;
   overlayCtx.strokeStyle='#3a6b58'; overlayCtx.lineWidth=2;
-  overlayCtx.strokeRect(mask.minX*scaleX, mask.minY*scaleY, (mask.maxX-mask.minX)*scaleX, (mask.maxY-mask.minY)*scaleY);
+  overlayCtx.strokeRect(box.minX*scaleX, box.minY*scaleY, (box.maxX-box.minX)*scaleX, (box.maxY-box.minY)*scaleY);
   overlayCtx.font='13px sans-serif';
   const textWidth=overlayCtx.measureText(label).width+12;
   overlayCtx.fillStyle='rgba(58,107,88,0.9)';
-  overlayCtx.fillRect(mask.minX*scaleX, Math.max(0,mask.minY*scaleY-22), textWidth, 20);
+  overlayCtx.fillRect(box.minX*scaleX, Math.max(0,box.minY*scaleY-22), textWidth, 20);
   overlayCtx.fillStyle='#fff';
-  overlayCtx.fillText(label, mask.minX*scaleX+6, Math.max(14,mask.minY*scaleY-7));
+  overlayCtx.fillText(label, box.minX*scaleX+6, Math.max(14,box.minY*scaleY-7));
 
   const key=colorName+'|'+(sizeName||'uncalibrated');
   if(key===lastKey) stableFrames++; else { lastKey=key; stableFrames=1; }
