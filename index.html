@@ -77,23 +77,15 @@
 <p class="subtitle">Hold a toy in front of the camera. Colour and size are detected automatically and matched against config.csv.</p>
 
 <div class="tabs">
-  <div class="tab active" id="tab-inventory" onclick="setMode('inventory')">Inventory</div>
-  <div class="tab" id="tab-checkout" onclick="setMode('checkout')">Checkout</div>
+  <div class="tab active" id="tab-setup" onclick="setTab('setup')">Setup</div>
+  <div class="tab" id="tab-inventory" onclick="setTab('inventory')">Inventory</div>
+  <div class="tab" id="tab-checkout" onclick="setTab('checkout')">Checkout</div>
 </div>
 
 <div class="grid">
   <div>
-    <div class="card" id="setupCard">
-      <h2>Setup checklist</h2>
-      <div id="setupList"></div>
-      <div class="controls">
-        <button class="primary" id="btnToggleScan" onclick="toggleScanning()" disabled>Start scanning</button>
-      </div>
-      <p class="muted" id="setupHint" style="margin:8px 0 0;">Complete the steps below in order, then start scanning.</p>
-    </div>
-
     <div class="card">
-      <h2>1. Camera</h2>
+      <h2>Camera</h2>
       <div class="cam-wrap">
         <video id="video" autoplay playsinline muted class="hidden"></video>
         <canvas id="overlay"></canvas>
@@ -101,77 +93,91 @@
       </div>
       <div class="controls">
         <button class="primary" id="btnStartCam" onclick="toggleCamera()">Start camera</button>
-        <button id="btnCaptureBg" onclick="captureBackground()" disabled>2. Capture empty background</button>
-      </div>
-    </div>
-
-    <div class="card">
-      <h2>3. Config file</h2>
-      <input type="file" id="configFile" accept=".csv" onchange="handleConfigFile(event)">
-      <div class="config-status" id="configStatus">No config loaded yet.</div>
-    </div>
-
-    <div class="card" id="calibCard">
-      <h2>4. Calibrate sizes</h2>
-      <p class="muted" style="margin-top:-6px;">Hold up one example toy per size below, then click capture. Do this once per session (or load a saved calibration).</p>
-      <div id="calibList"><p class="muted">Load a config file first.</p></div>
-      <div class="controls">
-        <button onclick="saveCalibration()">Save calibration</button>
-        <label style="align-self:center;">
-          <span class="muted">Load calibration</span>
-          <input type="file" id="calibFile" accept=".json" onchange="handleCalibFile(event)">
-        </label>
+        <button id="btnSwitchCam" onclick="switchCamera()" disabled>Switch camera</button>
+        <button id="btnCaptureBg" onclick="captureBackground()" disabled>Capture empty background</button>
       </div>
     </div>
   </div>
 
   <div>
-    <div class="card" id="lastScanCard" style="display:none;">
-      <h2>Last scanned</h2>
-      <div class="last-scan">
-        <div class="left">
-          <span class="swatch" id="lastSwatch"></span>
-          <span id="lastLabel">—</span>
-          <span class="size-tag" id="lastSizeTag"></span>
+    <div id="setupTabContent">
+      <div class="card" id="setupCard">
+        <h2>Setup checklist</h2>
+        <div id="setupList"></div>
+        <div class="controls">
+          <button class="primary" id="btnToggleScan" onclick="toggleScanning()" disabled>Start scanning</button>
         </div>
-        <div>
-          <span class="muted" style="margin-right:6px;">Not right?</span>
-          <select id="lastSizeSelect" onchange="overrideLastScan(this.value)"></select>
+        <p class="muted" id="setupHint" style="margin:8px 0 0;">Complete the steps below in order, then start scanning.</p>
+      </div>
+
+      <div class="card">
+        <h2>Config file</h2>
+        <input type="file" id="configFile" accept=".csv" onchange="handleConfigFile(event)">
+        <div class="config-status" id="configStatus">No config loaded yet.</div>
+      </div>
+
+      <div class="card" id="calibCard">
+        <h2>Calibrate sizes</h2>
+        <p class="muted" style="margin-top:-6px;">Hold up one example toy per size below, then click capture. Do this once per session (or load a saved calibration).</p>
+        <div id="calibList"><p class="muted">Load a config file first.</p></div>
+        <div class="controls">
+          <button onclick="saveCalibration()">Save calibration</button>
+          <label style="align-self:center;">
+            <span class="muted">Load calibration</span>
+            <input type="file" id="calibFile" accept=".json" onchange="handleCalibFile(event)">
+          </label>
         </div>
       </div>
-      <p class="muted" id="dotInstruction" style="margin:10px 0 0;"></p>
     </div>
 
-    <div class="card" id="inventoryPanel">
-      <h2>Counted this session</h2>
-      <div id="tallyList"><p class="muted">No objects counted yet.</p></div>
-      <div class="controls">
-        <button onclick="resetTally()">Reset session</button>
-        <button class="primary" onclick="exportInventoryCsv()">Export CSV</button>
+    <div id="scanTabContent" class="hidden">
+      <div class="card" id="lastScanCard" style="display:none;">
+        <h2>Last scanned</h2>
+        <div class="last-scan">
+          <div class="left">
+            <span class="swatch" id="lastSwatch"></span>
+            <span id="lastLabel">—</span>
+            <span class="size-tag" id="lastSizeTag"></span>
+          </div>
+          <div>
+            <span class="muted" style="margin-right:6px;">Not right?</span>
+            <select id="lastSizeSelect" onchange="overrideLastScan(this.value)"></select>
+          </div>
+        </div>
+        <p class="muted" id="dotInstruction" style="margin:10px 0 0;"></p>
       </div>
-    </div>
 
-    <div class="card hidden" id="checkoutPanel">
-      <h2>Cart</h2>
-      <div id="cartList"><p class="muted">No items scanned yet.</p></div>
-      <div class="total-row">
-        <span class="muted">Total (AUD)</span>
-        <span class="amount" id="cartTotal">$0.00</span>
+      <div class="card" id="inventoryPanel">
+        <h2>Counted this session</h2>
+        <div id="tallyList"><p class="muted">No objects counted yet.</p></div>
+        <div class="controls">
+          <button onclick="resetTally()">Reset session</button>
+          <button class="primary" onclick="exportInventoryCsv()">Export CSV</button>
+        </div>
       </div>
-      <div class="controls">
-        <button onclick="clearCart()">Clear cart</button>
-        <button class="primary" onclick="completeSale()">Complete sale</button>
-      </div>
-    </div>
 
-    <div class="card hidden" id="historyPanel">
-      <h2>Transaction history (this session)</h2>
-      <table id="historyTable">
-        <thead><tr><th>Time</th><th>Items</th><th>Total</th></tr></thead>
-        <tbody id="historyBody"><tr><td colspan="3" class="muted">No sales yet.</td></tr></tbody>
-      </table>
-      <div class="controls">
-        <button onclick="exportHistoryCsv()">Download history CSV</button>
+      <div class="card hidden" id="checkoutPanel">
+        <h2>Cart</h2>
+        <div id="cartList"><p class="muted">No items scanned yet.</p></div>
+        <div class="total-row">
+          <span class="muted">Total (AUD)</span>
+          <span class="amount" id="cartTotal">$0.00</span>
+        </div>
+        <div class="controls">
+          <button onclick="clearCart()">Clear cart</button>
+          <button class="primary" onclick="completeSale()">Complete sale</button>
+        </div>
+      </div>
+
+      <div class="card hidden" id="historyPanel">
+        <h2>Transaction history (this session)</h2>
+        <table id="historyTable">
+          <thead><tr><th>Time</th><th>Items</th><th>Total</th></tr></thead>
+          <tbody id="historyBody"><tr><td colspan="3" class="muted">No sales yet.</td></tr></tbody>
+        </table>
+        <div class="controls">
+          <button onclick="exportHistoryCsv()">Download history CSV</button>
+        </div>
       </div>
     </div>
   </div>
@@ -209,11 +215,13 @@ const DOT_MIN_PIXELS=5; // minimum matching pixels (at working resolution) to tr
 /* ---------- state ---------- */
 let video, overlay, overlayCtx, workCanvas, workCtx;
 let stream=null, backgroundData=null, detectionTimer=null;
+let currentFacingMode='environment'; // request the rear camera by default on mobile
 let config=[]; // {color,size,price}
 let sizesByColor={}; // color -> [size,...] in config order
 let calibrationOrder=[]; // unique size names, canonical order first
 let calibration={}; // size -> reference area
-let mode='inventory';
+let mode='inventory'; // which scan target: 'inventory' or 'checkout'
+let currentTab='setup'; // which tab is displayed: 'setup' | 'inventory' | 'checkout'
 let tally={}; // "color|size" -> count
 let cart=[]; // {color,size,price,qty}
 let transactions=[];
@@ -235,17 +243,28 @@ window.onload=()=>{
     .catch(()=>{});
 
   updateSetupState();
+  setTab('setup');
 };
 
-function setMode(m){
-  mode=m;
-  document.getElementById('tab-inventory').classList.toggle('active', m==='inventory');
-  document.getElementById('tab-checkout').classList.toggle('active', m==='checkout');
-  document.getElementById('inventoryPanel').classList.toggle('hidden', m!=='inventory');
-  document.getElementById('checkoutPanel').classList.toggle('hidden', m!=='checkout');
-  document.getElementById('historyPanel').classList.toggle('hidden', m!=='checkout');
-  document.getElementById('lastScanCard').style.display='none';
-  lastScan=null;
+function setTab(tab){
+  currentTab=tab;
+  document.getElementById('tab-setup').classList.toggle('active', tab==='setup');
+  document.getElementById('tab-inventory').classList.toggle('active', tab==='inventory');
+  document.getElementById('tab-checkout').classList.toggle('active', tab==='checkout');
+
+  document.getElementById('setupTabContent').classList.toggle('hidden', tab!=='setup');
+  document.getElementById('scanTabContent').classList.toggle('hidden', tab==='setup');
+
+  if(tab==='inventory' || tab==='checkout'){
+    if(mode!==tab){
+      mode=tab;
+      document.getElementById('lastScanCard').style.display='none';
+      lastScan=null;
+    }
+    document.getElementById('inventoryPanel').classList.toggle('hidden', mode!=='inventory');
+    document.getElementById('checkoutPanel').classList.toggle('hidden', mode!=='checkout');
+    document.getElementById('historyPanel').classList.toggle('hidden', mode!=='checkout');
+  }
 }
 
 /* ---------- camera ---------- */
@@ -255,12 +274,16 @@ async function toggleCamera(){
 
 async function startCamera(){
   try{
-    stream=await navigator.mediaDevices.getUserMedia({video:{width:640,height:480}, audio:false});
+    stream=await navigator.mediaDevices.getUserMedia({
+      video:{width:640, height:480, facingMode:{ideal:currentFacingMode}},
+      audio:false
+    });
     video.srcObject=stream;
     video.classList.remove('hidden');
     overlay.width=640; overlay.height=480;
     document.getElementById('statusPill').textContent='camera on — capture background next';
     document.getElementById('btnStartCam').textContent='Stop camera';
+    document.getElementById('btnSwitchCam').disabled=false;
     updateSetupState();
   }catch(err){
     alert('Could not access camera: '+err.message+'\nMake sure this page is served over https:// or localhost.');
@@ -274,7 +297,27 @@ function stopCamera(){
   backgroundData=null; // camera position/framing may change, so require a fresh background capture
   document.getElementById('statusPill').textContent='camera off';
   document.getElementById('btnStartCam').textContent='Start camera';
+  document.getElementById('btnSwitchCam').disabled=true;
   updateSetupState();
+}
+
+async function switchCamera(){
+  if(!stream) return;
+  currentFacingMode = currentFacingMode==='environment' ? 'user' : 'environment';
+  stream.getTracks().forEach(t=>t.stop());
+  backgroundData=null; // the framing has changed, so require a fresh background capture
+  try{
+    stream=await navigator.mediaDevices.getUserMedia({
+      video:{width:640, height:480, facingMode:{ideal:currentFacingMode}},
+      audio:false
+    });
+    video.srcObject=stream;
+    document.getElementById('statusPill').textContent=
+      `switched to ${currentFacingMode==='environment'?'rear':'front'} camera — capture background next`;
+    updateSetupState();
+  }catch(err){
+    alert('Could not switch camera: '+err.message);
+  }
 }
 
 function captureBackground(){
@@ -324,6 +367,7 @@ function updateSetupState(){
     </div>`).join('');
 
   document.getElementById('btnCaptureBg').disabled=!stream;
+  document.getElementById('btnSwitchCam').disabled=!stream;
 
   const ready=canScan();
   const scanBtn=document.getElementById('btnToggleScan');
@@ -393,7 +437,7 @@ function captureCalibration(size){
   const data=workCtx.getImageData(0,0,W,H).data;
   const mask=foregroundMask(data);
   if(mask.count<EMPTY_AREA_THRESHOLD){ alert('No object detected in frame — hold the '+size+' example up and try again.'); return; }
-  calibration[size]=mask.bboxArea;
+  calibration[size]=mask.count;
   updateSetupState();
 }
 
@@ -491,7 +535,7 @@ function processFrame(){
   if(dotSize && validSizes.includes(dotSize)){
     sizeName=dotSize; sizeSource='dot';
   }else{
-    sizeName=nearestCalibratedSize(mask.bboxArea); sizeSource='auto';
+    sizeName=nearestCalibratedSize(mask.count); sizeSource='auto';
   }
 
   const label=sizeName? `${colorName} · ${sizeName}` : `${colorName} · uncalibrated`;
