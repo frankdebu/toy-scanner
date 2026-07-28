@@ -23,6 +23,8 @@
     background:var(--card); cursor:pointer; font-size:14px; font-weight:500;
   }
   .tab.active{background:var(--accent); color:#fff; border-color:var(--accent);}
+  .tabs{position:sticky; top:0; z-index:20; background:var(--bg); padding:10px 0 8px; box-shadow:0 6px 8px -8px rgba(0,0,0,0.18);}
+  .cam-col{position:sticky; top:48px; z-index:15; background:var(--bg); padding-bottom:8px; box-shadow:0 6px 8px -8px rgba(0,0,0,0.18);}
   .grid{display:grid; grid-template-columns:1.3fr 1fr; gap:16px; align-items:start;}
   @media (max-width:800px){ .grid{grid-template-columns:1fr;} }
   .card{
@@ -53,6 +55,7 @@
   .row{display:flex; justify-content:space-between; align-items:center; padding:8px 10px;
        border:1px solid var(--border); border-radius:var(--radius); margin-bottom:6px; font-size:13px;}
   .swatch{width:14px; height:14px; border-radius:50%; display:inline-block; margin-right:8px; border:1px solid rgba(0,0,0,0.15);}
+  .swatch.uncategorized{background:repeating-linear-gradient(45deg,#ccc,#ccc 2px,#fff 2px,#fff 4px); border:1px dashed var(--muted);}
   .size-tag{font-size:11px; color:var(--muted); background:var(--bg); padding:2px 7px; border-radius:20px; margin-left:8px;}
   .total-row{display:flex; justify-content:space-between; align-items:baseline;
        margin-top:12px; padding-top:12px; border-top:1px solid var(--border);}
@@ -62,19 +65,23 @@
   .ok{color:var(--accent);}
   .warn{color:var(--danger);}
   .hidden{display:none !important;}
-  .calib-item{display:flex; justify-content:space-between; align-items:center; padding:6px 0; border-bottom:1px solid var(--border); font-size:13px;}
+  .calib-item{display:flex; justify-content:space-between; align-items:center; padding:5px 0; border-bottom:1px solid var(--border); font-size:13px; flex-wrap:wrap; gap:6px;}
   .calib-item:last-child{border-bottom:none;}
   .badge{font-size:11px; padding:2px 8px; border-radius:20px;}
   .badge.done{background:var(--accent-bg); color:var(--accent);}
   .badge.todo{background:var(--danger-bg); color:var(--danger);}
   .last-scan{display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;}
   .last-scan .left{display:flex; align-items:center;}
+  .last-scan .swatch{width:22px; height:22px; margin-right:10px;}
+  .last-scan .swatch.uncategorized{width:22px; height:22px;}
+  #lastLabel{font-size:17px; font-weight:600;}
+  #lastLabel.uncategorized-label{color:var(--danger); font-weight:600;}
 </style>
 </head>
 <body>
 
 <h1>Toy scanner</h1>
-<p class="subtitle">Hold a toy in front of the camera. Colour and size are detected automatically and matched against config.csv.</p>
+<p class="subtitle">Place an item in the scanning area. Size is detected automatically from its shape; colour comes from a dot sticker if present, or pick it manually.</p>
 
 <div class="tabs">
   <div class="tab active" id="tab-setup" onclick="setTab('setup')">Setup</div>
@@ -83,7 +90,7 @@
 </div>
 
 <div class="grid">
-  <div>
+  <div class="cam-col">
     <div class="card">
       <h2>Camera</h2>
       <div class="cam-wrap">
@@ -139,9 +146,15 @@
             <span id="lastLabel">—</span>
             <span class="size-tag" id="lastSizeTag"></span>
           </div>
-          <div>
-            <span class="muted" style="margin-right:6px;">Not right?</span>
-            <select id="lastSizeSelect" onchange="overrideLastScan(this.value)"></select>
+          <div style="display:flex; gap:14px; flex-wrap:wrap;">
+            <span>
+              <span class="muted" style="margin-right:6px;">Colour</span>
+              <select id="lastColorSelect" onchange="overrideLastScanColor(this.value)"></select>
+            </span>
+            <span>
+              <span class="muted" style="margin-right:6px;">Size</span>
+              <select id="lastSizeSelect" onchange="overrideLastScanSize(this.value)"></select>
+            </span>
           </div>
         </div>
         <p class="muted" id="dotInstruction" style="margin:10px 0 0;"></p>
@@ -189,50 +202,40 @@ const TOY_COLORS={
   red:[210,40,40], blue:[40,80,210], green:[50,150,60],
   yellow:[220,200,40], orange:[220,120,30], purple:[120,50,150]
 };
-// Reserved colour for override dots. Must NOT be one of the TOY_COLORS above.
-// One reserved dot colour per size — the dot's COLOUR tells the app the size directly,
-// so only ever one dot is needed regardless of how many size tiers you have.
-// These must be visually distinct from both your six toy colours AND from common toy
-// body colours generally (e.g. avoid plain white/black — see user manual). Fluorescent/
-// neon tones work well since moulded toy plastic is rarely made in those exact shades.
-// If a reserved colour still clashes with a specific toy, skip the dot for that item and
-// use the dropdown correction instead.
-const SIZE_DOT_COLORS={
-  small:  {name:'neon pink',   rgb:[255,20,147]},
-  medium: {name:'neon green',  rgb:[57,255,20]},
-  large:  {name:'neon orange', rgb:[255,95,15]},
-  xlarge: {name:'neon yellow', rgb:[255,250,25]}
-};
 const CANONICAL_SIZE_ORDER=['small','medium','large','xlarge'];
 
 const W=160, H=120; // working resolution for detection
-const DIFF_THRESHOLD=40;
-const EMPTY_AREA_THRESHOLD=250;
+const LUMA_DIFF_THRESHOLD=30; // brightness difference vs background to flag a pixel as foreground
+const EMPTY_AREA_THRESHOLD=250; // minimum foreground pixels to consider something present
 const HISTORY_LENGTH=8; // frames considered in the rolling majority vote
 const REQUIRED_MATCHES=5; // how many of those frames must agree to commit a count
-const MOTION_DIFF_THRESHOLD=30; // per-pixel diff between consecutive frames to count as "moving"
-const MOTION_PIXEL_THRESHOLD=80; // minimum moving pixels to consider the scene currently in motion
+
+// Motion is measured in coarse blocks, restricted to the object's own bounding box —
+// not the whole frame. This avoids false "motion" from camera vibration or sensor noise,
+// which shows up as widespread faint jitter everywhere, whereas real motion (a hand
+// placing/removing an item) changes a large fraction of the object's own blocks at once.
+const BLOCK_SIZE=8; // px per block edge, at the working resolution
+const BLOCK_DIFF_THRESHOLD=12; // average brightness change per block to count it as "changed"
+const MOTION_BLOCK_FRACTION=0.15; // fraction of blocks in the object area that must change to call it "moving"
 const SETTLE_FRAMES_REQUIRED=3; // consecutive low-motion frames required before trusting a reading
-const DOT_MATCH_THRESHOLD=60; // colour distance to count a pixel as a dot
-const DOT_MIN_PIXELS=5; // minimum matching pixels (at working resolution) to trust a dot detection
-// Toy colour matching uses HUE rather than raw RGB distance, since hue stays roughly
-// consistent as lighting/brightness changes, whereas RGB distance is thrown off easily
-// by shadows or warm/cool lighting. Saturation/value minimums filter out near-grey,
-// near-black, near-white, or skin-tone-ish pixels so they don't get force-matched to a
-// colour they don't really resemble.
+
+// Colour is read ONLY from a dot sticker (not the toy's own body) — hue-based matching,
+// since hue stays roughly consistent as lighting/brightness changes. Saturation/value
+// minimums filter out near-grey/near-black/near-white pixels so they're never force-
+// matched to a colour they don't really resemble.
 const HUE_MATCH_THRESHOLD=30; // degrees of hue difference to still count as a match
 const MIN_SATURATION=0.28; // 0-1, below this a pixel is too washed-out to classify
 const MIN_VALUE=0.18; // 0-1, below this a pixel is too dark to classify
-const MIN_COLOR_PIXELS=100; // minimum colour-matched pixels to confidently classify a colour
+const MIN_DOT_COLOR_PIXELS=12; // minimum matching pixels (at working resolution) to trust a dot reading
 
 /* ---------- state ---------- */
 let video, overlay, overlayCtx, workCanvas, workCtx;
-let stream=null, backgroundData=null, detectionTimer=null;
+let stream=null, backgroundLuma=null, detectionTimer=null;
 let currentFacingMode='environment'; // request the rear camera by default on mobile
 let config=[]; // {color,size,price}
 let sizesByColor={}; // color -> [size,...] in config order
 let calibrationOrder=[]; // unique size names, canonical order first
-let calibration={}; // size -> reference area
+let calibration={}; // size -> reference silhouette pixel count
 let mode='inventory'; // which scan target: 'inventory' or 'checkout'
 let currentTab='setup'; // which tab is displayed: 'setup' | 'inventory' | 'checkout'
 let tally={}; // "color|size" -> count
@@ -240,7 +243,7 @@ let cart=[]; // {color,size,price,qty}
 let transactions=[];
 let detectionHistory=[]; // rolling window of recent per-frame detection keys
 let lastCountedKey=null; // prevents recounting the same still-in-frame object
-let previousFrameData=null; // last frame's pixels, for frame-to-frame motion detection
+let previousLuma=null; // last frame's brightness values, for frame-to-frame motion detection
 let scanState='empty'; // 'empty' | 'moving' | 'settling' | 'settled'
 let settledFrames=0; // consecutive low-motion frames seen so far
 let lastScan=null; // {color,size,tallyKey or cartKey}
@@ -311,8 +314,8 @@ function stopCamera(){
   pauseScanning();
   if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
   video.classList.add('hidden');
-  backgroundData=null; // camera position/framing may change, so require a fresh background capture
-  previousFrameData=null; scanState='empty'; settledFrames=0; detectionHistory=[]; lastCountedKey=null;
+  backgroundLuma=null; // camera position/framing may change, so require a fresh background capture
+  previousLuma=null; scanState='empty'; settledFrames=0; detectionHistory=[]; lastCountedKey=null;
   document.getElementById('statusPill').textContent='camera off';
   document.getElementById('btnStartCam').textContent='Start camera';
   document.getElementById('btnSwitchCam').disabled=true;
@@ -323,7 +326,7 @@ async function switchCamera(){
   if(!stream) return;
   currentFacingMode = currentFacingMode==='environment' ? 'user' : 'environment';
   stream.getTracks().forEach(t=>t.stop());
-  backgroundData=null; // the framing has changed, so require a fresh background capture
+  backgroundLuma=null; // the framing has changed, so require a fresh background capture
   try{
     stream=await navigator.mediaDevices.getUserMedia({
       video:{width:640, height:480, facingMode:{ideal:currentFacingMode}},
@@ -341,15 +344,16 @@ async function switchCamera(){
 function captureBackground(){
   if(!stream) return;
   workCtx.drawImage(video,0,0,W,H);
-  backgroundData=workCtx.getImageData(0,0,W,H).data.slice();
-  previousFrameData=null; scanState='empty'; settledFrames=0; detectionHistory=[]; lastCountedKey=null;
+  const data=workCtx.getImageData(0,0,W,H).data;
+  backgroundLuma=computeLuma(data);
+  previousLuma=null; scanState='empty'; settledFrames=0; detectionHistory=[]; lastCountedKey=null;
   document.getElementById('statusPill').textContent='background captured';
   updateSetupState();
 }
 
 /* ---------- scanning control ---------- */
 function canScan(){
-  return !!backgroundData && config.length>0 && calibrationOrder.length>0 && calibrationOrder.every(s=>calibration[s]);
+  return !!backgroundLuma && config.length>0 && calibrationOrder.length>0 && calibrationOrder.every(s=>calibration[s]);
 }
 
 function toggleScanning(){
@@ -359,7 +363,7 @@ function toggleScanning(){
 function beginScanning(){
   if(!canScan()) return;
   if(detectionTimer) clearInterval(detectionTimer);
-  previousFrameData=null; scanState='empty'; settledFrames=0; detectionHistory=[]; lastCountedKey=null;
+  previousLuma=null; scanState='empty'; settledFrames=0; detectionHistory=[]; lastCountedKey=null;
   detectionTimer=setInterval(processFrame,150);
   document.getElementById('statusPill').textContent='scanning';
   document.getElementById('btnToggleScan').textContent='Pause scanning';
@@ -369,14 +373,14 @@ function pauseScanning(){
   if(detectionTimer){ clearInterval(detectionTimer); detectionTimer=null; }
   const btn=document.getElementById('btnToggleScan');
   if(btn) btn.textContent='Start scanning';
-  if(stream && backgroundData) document.getElementById('statusPill').textContent='paused';
+  if(stream && backgroundLuma) document.getElementById('statusPill').textContent='paused';
 }
 
 /* ---------- setup checklist ---------- */
 function updateSetupState(){
   const steps=[
     {label:'Start the camera', done: !!stream},
-    {label:'Capture the empty background', done: !!backgroundData},
+    {label:'Capture the empty background', done: !!backgroundLuma},
     {label:'Load config.csv', done: config.length>0},
     {label:'Calibrate all sizes', done: calibrationOrder.length>0 && calibrationOrder.every(s=>calibration[s])}
   ];
@@ -446,23 +450,19 @@ function renderCalibList(){
       <span>${size}</span>
       <span>
         <span class="badge ${calibration[size]?'done':'todo'}">${calibration[size]?'captured':'not captured'}</span>
-        <button onclick="captureCalibration('${size}')" ${!backgroundData?'disabled title="Capture background first"':''}>Capture example</button>
+        <button onclick="captureCalibration('${size}')" ${!backgroundLuma?'disabled title="Capture background first"':''}>Capture example</button>
       </span>
     </div>`).join('');
 }
 
 function captureCalibration(size){
-  if(!backgroundData){ alert('Capture the empty background first.'); return; }
+  if(!backgroundLuma){ alert('Capture the empty background first.'); return; }
   workCtx.drawImage(video,0,0,W,H);
   const data=workCtx.getImageData(0,0,W,H).data;
-  const mask=foregroundMask(data);
-  if(mask.count<EMPTY_AREA_THRESHOLD){ alert('No object detected in frame — hold the '+size+' example up and try again.'); return; }
-  const {colorName, boxArea}=classifyColorAndSize(data, mask.fg);
-  if(!colorName){
-    alert('Could not clearly identify the toy\'s colour — try better lighting, or hold the toy so more of its coloured surface faces the camera (away from your hand).');
-    return;
-  }
-  calibration[size]=boxArea;
+  const luma=computeLuma(data);
+  const mask=foregroundMask(luma);
+  if(mask.count<EMPTY_AREA_THRESHOLD){ alert('No object detected in frame — place the '+size+' example in view and try again.'); return; }
+  calibration[size]=mask.count;
   updateSetupState();
 }
 
@@ -480,59 +480,59 @@ function handleCalibFile(evt){
 }
 
 /* ---------- detection ---------- */
-function foregroundMask(data){
-  let minX=W, minY=H, maxX=0, maxY=0, count=0, sumR=0, sumG=0, sumB=0;
+function computeLuma(data){
+  const luma=new Float32Array(W*H);
+  for(let idx=0; idx<W*H; idx++){
+    const i=idx*4;
+    luma[idx]=0.299*data[i] + 0.587*data[i+1] + 0.114*data[i+2];
+  }
+  return luma;
+}
+
+// Pure brightness/contrast silhouette detection — no colour involved. This is what
+// makes size measurement immune to glare, grey/reflective toys, and lighting colour
+// shifts: it only asks "is this pixel different enough from the empty background".
+function foregroundMask(luma){
+  let minX=W, minY=H, maxX=0, maxY=0, count=0;
   const fg=new Uint8Array(W*H);
   for(let y=0;y<H;y++){
     for(let x=0;x<W;x++){
-      const idx=y*W+x, i=idx*4;
-      const dr=data[i]-backgroundData[i], dg=data[i+1]-backgroundData[i+1], db=data[i+2]-backgroundData[i+2];
-      const diff=Math.sqrt(dr*dr+dg*dg+db*db);
-      if(diff>DIFF_THRESHOLD){
-        fg[idx]=1; count++; sumR+=data[i]; sumG+=data[i+1]; sumB+=data[i+2];
+      const idx=y*W+x;
+      const diff=Math.abs(luma[idx]-backgroundLuma[idx]);
+      if(diff>LUMA_DIFF_THRESHOLD){
+        fg[idx]=1; count++;
         if(x<minX)minX=x; if(x>maxX)maxX=x; if(y<minY)minY=y; if(y>maxY)maxY=y;
       }
     }
   }
-  return {fg, count, minX, minY, maxX, maxY, bboxArea:(maxX-minX)*(maxY-minY), avgColor:count?[sumR/count,sumG/count,sumB/count]:[0,0,0]};
+  return {fg, count, minX, minY, maxX, maxY};
 }
 
-// Compares the current frame to the PREVIOUS frame (not the background) to detect
-// whether anything is currently moving — e.g. a hand placing or removing an item.
-// This is deliberately separate from the background diff above: background diff answers
-// "is something here that wasn't in the empty scene", motion diff answers "is anything
-// changing right now". We only trust a reading once motion has stopped.
-function motionPixelCount(current, previous){
-  if(!previous) return 0;
-  let count=0;
-  for(let idx=0; idx<W*H; idx++){
-    const i=idx*4;
-    const dr=current[i]-previous[i], dg=current[i+1]-previous[i+1], db=current[i+2]-previous[i+2];
-    const diff=Math.sqrt(dr*dr+dg*dg+db*db);
-    if(diff>MOTION_DIFF_THRESHOLD) count++;
-  }
-  return count;
-}
-
-function detectDotSize(data, minX, minY, maxX, maxY){
-  // Counts pixels within the bbox matching each reserved size-colour; returns whichever
-  // size has the most matching pixels, as long as it clears the minimum pixel count.
-  const counts={};
-  for(const size in SIZE_DOT_COLORS) counts[size]=0;
-  for(let y=minY;y<=maxY;y++){
-    for(let x=minX;x<=maxX;x++){
-      const i=(y*W+x)*4;
-      for(const [size, dot] of Object.entries(SIZE_DOT_COLORS)){
-        const d=Math.sqrt((data[i]-dot.rgb[0])**2+(data[i+1]-dot.rgb[1])**2+(data[i+2]-dot.rgb[2])**2);
-        if(d<DOT_MATCH_THRESHOLD) counts[size]++;
+// Compares the current frame to the PREVIOUS frame (not the background), restricted to
+// the object's own bounding box, using coarse block averages rather than raw pixels.
+// This combination is what makes it tolerant of camera vibration and sensor noise:
+// - Restricting to the object's box ignores background-only jitter entirely.
+// - Averaging over blocks smooths out small per-pixel noise/vibration, while a real
+//   hand moving through the object area still changes a large fraction of blocks.
+function isMoving(currentLuma, previousLuma, minX, minY, maxX, maxY){
+  if(!previousLuma) return false;
+  let changedBlocks=0, totalBlocks=0;
+  for(let by=minY; by<=maxY; by+=BLOCK_SIZE){
+    for(let bx=minX; bx<=maxX; bx+=BLOCK_SIZE){
+      const byEnd=Math.min(by+BLOCK_SIZE, maxY+1), bxEnd=Math.min(bx+BLOCK_SIZE, maxX+1);
+      let sumCur=0, sumPrev=0, n=0;
+      for(let y=by; y<byEnd; y++){
+        for(let x=bx; x<bxEnd; x++){
+          const idx=y*W+x;
+          sumCur+=currentLuma[idx]; sumPrev+=previousLuma[idx]; n++;
+        }
       }
+      if(n===0) continue;
+      totalBlocks++;
+      if(Math.abs(sumCur/n - sumPrev/n) > BLOCK_DIFF_THRESHOLD) changedBlocks++;
     }
   }
-  let best=null, bestCount=0;
-  for(const [size,count] of Object.entries(counts)){
-    if(count>bestCount){ bestCount=count; best=size; }
-  }
-  return bestCount>=DOT_MIN_PIXELS ? best : null;
+  return totalBlocks>0 && (changedBlocks/totalBlocks) > MOTION_BLOCK_FRACTION;
 }
 
 function rgbToHsv(r,g,b){
@@ -572,33 +572,24 @@ function nearestColorWithDist(rgb){
   return {name:best, dist:bestDist};
 }
 
-// Classifies colour AND measures size using only the foreground pixels that closely
-// match one of the six toy colours — this deliberately excludes a hand/arm holding the
-// toy (skin tone doesn't closely match any saturated toy colour), so the resulting pixel
-// count reflects the toy's own footprint rather than hand+toy combined.
-function classifyColorAndSize(data, fg){
-  const counts={}; const boxes={};
-  for(const c in TOY_COLORS){ counts[c]=0; boxes[c]={minX:W, minY:H, maxX:0, maxY:0}; }
-  for(let y=0;y<H;y++){
-    for(let x=0;x<W;x++){
-      const idx=y*W+x;
-      if(!fg[idx]) continue;
-      const i=idx*4;
+// Colour comes ONLY from a dot sticker — a red dot means "red category", directly,
+// no reserved/neon palette needed. Scans the object's bounding box in the ORIGINAL
+// colour frame (not the grayscale silhouette) for a small patch matching one of the
+// six category colours; returns null if no confident dot is found (a common, expected
+// case — the item just has no dot yet, and colour will need a manual pick instead).
+function detectDotColor(data, minX, minY, maxX, maxY){
+  const counts={};
+  for(const name in TOY_COLORS) counts[name]=0;
+  for(let y=minY; y<=maxY; y++){
+    for(let x=minX; x<=maxX; x++){
+      const i=(y*W+x)*4;
       const {name}=nearestColorWithDist([data[i], data[i+1], data[i+2]]);
-      if(name){
-        counts[name]++;
-        const b=boxes[name];
-        if(x<b.minX)b.minX=x; if(x>b.maxX)b.maxX=x;
-        if(y<b.minY)b.minY=y; if(y>b.maxY)b.maxY=y;
-      }
+      if(name) counts[name]++;
     }
   }
   let best=null, bestCount=0;
   for(const [name, count] of Object.entries(counts)){ if(count>bestCount){ bestCount=count; best=name; } }
-  if(bestCount<MIN_COLOR_PIXELS) return { colorName:null, colorCount:0, box:null, boxArea:0 };
-  const b=boxes[best];
-  const boxArea=(b.maxX-b.minX+1)*(b.maxY-b.minY+1);
-  return { colorName:best, colorCount:bestCount, box:b, boxArea };
+  return bestCount>=MIN_DOT_COLOR_PIXELS ? best : null;
 }
 
 function nearestCalibratedSize(area){
@@ -610,19 +601,21 @@ function nearestCalibratedSize(area){
     if(d<bestDist){ bestDist=d; best=size; }
   }
   return best;
+
 }
 
 function processFrame(){
-  if(!backgroundData) return;
+  if(!backgroundLuma) return;
   workCtx.drawImage(video,0,0,W,H);
   const data=workCtx.getImageData(0,0,W,H).data;
-  const mask=foregroundMask(data);
+  const luma=computeLuma(data);
+  const mask=foregroundMask(luma);
 
   overlayCtx.clearRect(0,0,overlay.width,overlay.height);
   const scaleX=overlay.width/W, scaleY=overlay.height/H;
 
-  const motionCount=motionPixelCount(data, previousFrameData);
-  previousFrameData=data.slice();
+  const previous=previousLuma;
+  previousLuma=luma;
 
   if(mask.count<EMPTY_AREA_THRESHOLD){
     scanState='empty'; settledFrames=0; detectionHistory=[]; lastCountedKey=null;
@@ -630,7 +623,7 @@ function processFrame(){
     return;
   }
 
-  if(motionCount>MOTION_PIXEL_THRESHOLD){
+  if(isMoving(luma, previous, mask.minX, mask.minY, mask.maxX, mask.maxY)){
     if(scanState!=='moving') detectionHistory=[]; // discard stale votes once motion resumes
     scanState='moving'; settledFrames=0;
     overlayCtx.strokeStyle='#a3402f'; overlayCtx.lineWidth=2;
@@ -650,41 +643,28 @@ function processFrame(){
 
   scanState='settled';
 
-  const {colorName, box, boxArea}=classifyColorAndSize(data, mask.fg);
+  // Size comes purely from the silhouette's footprint — no colour involved, so glare,
+  // grey/reflective toys, and lighting colour shifts don't affect it.
+  const sizeName=nearestCalibratedSize(mask.count);
+  // Colour comes ONLY from a dot sticker, if one is present — may legitimately be null.
+  const colorName=detectDotColor(data, mask.minX, mask.minY, mask.maxX, mask.maxY);
 
-  if(!colorName){
-    // A noisy single frame with no confident colour shouldn't wipe out a run of good
-    // reads — just skip voting this frame rather than resetting the whole history.
-    overlayCtx.strokeStyle='#a3402f'; overlayCtx.lineWidth=2;
-    overlayCtx.strokeRect(mask.minX*scaleX, mask.minY*scaleY, (mask.maxX-mask.minX)*scaleX, (mask.maxY-mask.minY)*scaleY);
-    document.getElementById('statusPill').textContent='scanning — no toy colour detected';
-    return;
-  }
-
-  const validSizes=sizesByColor[colorName]||[];
-  const dotSize=detectDotSize(data, box.minX, box.minY, box.maxX, box.maxY);
-  let sizeName, sizeSource;
-  if(dotSize && validSizes.includes(dotSize)){
-    sizeName=dotSize; sizeSource='dot';
-  }else{
-    sizeName=nearestCalibratedSize(boxArea); sizeSource='auto';
-  }
-
-  const label=sizeName? `${colorName} · ${sizeName}` : `${colorName} · uncalibrated`;
-  overlayCtx.strokeStyle='#3a6b58'; overlayCtx.lineWidth=2;
-  overlayCtx.strokeRect(box.minX*scaleX, box.minY*scaleY, (box.maxX-box.minX)*scaleX, (box.maxY-box.minY)*scaleY);
+  const displayColor=colorName || 'uncategorized';
+  const label=`${displayColor} · ${sizeName||'uncalibrated'}`;
+  overlayCtx.strokeStyle=colorName? '#3a6b58' : '#c9a227'; overlayCtx.lineWidth=2;
+  overlayCtx.strokeRect(mask.minX*scaleX, mask.minY*scaleY, (mask.maxX-mask.minX)*scaleX, (mask.maxY-mask.minY)*scaleY);
   overlayCtx.font='13px sans-serif';
   const textWidth=overlayCtx.measureText(label).width+12;
-  overlayCtx.fillStyle='rgba(58,107,88,0.9)';
-  overlayCtx.fillRect(box.minX*scaleX, Math.max(0,box.minY*scaleY-22), textWidth, 20);
+  overlayCtx.fillStyle=colorName? 'rgba(58,107,88,0.9)' : 'rgba(201,162,39,0.9)';
+  overlayCtx.fillRect(mask.minX*scaleX, Math.max(0,mask.minY*scaleY-22), textWidth, 20);
   overlayCtx.fillStyle='#fff';
-  overlayCtx.fillText(label, box.minX*scaleX+6, Math.max(14,box.minY*scaleY-7));
+  overlayCtx.fillText(label, mask.minX*scaleX+6, Math.max(14,mask.minY*scaleY-7));
 
   // Rolling-window majority vote: instead of requiring N identical frames in a row
   // (which restarts on any single noisy frame), we require a key to win a majority
   // within a short recent window — far more tolerant of the odd misread while still
   // requiring genuine, repeated agreement before committing to a count.
-  const key=colorName+'|'+(sizeName||'uncalibrated');
+  const key=displayColor+'|'+(sizeName||'uncalibrated');
   detectionHistory.push(key);
   if(detectionHistory.length>HISTORY_LENGTH) detectionHistory.shift();
 
@@ -712,35 +692,94 @@ function priceFor(color,size){
 
 function registerDetection(color,size){
   if(!size){ alert('Size not yet calibrated — see the Calibrate sizes panel.'); return; }
+  const colorKey=color || 'uncategorized';
   if(mode==='inventory'){
-    const key=color+'|'+size;
+    const key=colorKey+'|'+size;
     tally[key]=(tally[key]||0)+1;
     renderTally();
-    lastScan={type:'tally', key, color, size};
+    lastScan={type:'tally', key, color:colorKey, size};
   }else{
-    const price=priceFor(color,size)||0;
-    let line=cart.find(c=>c.color===color && c.size===size);
-    if(line) line.qty++; else { line={color,size,price,qty:1}; cart.push(line); }
+    const price=priceFor(colorKey,size)||0;
+    let line=cart.find(c=>c.color===colorKey && c.size===size);
+    if(line) line.qty++; else { line={color:colorKey,size,price,qty:1}; cart.push(line); }
     renderCart();
-    lastScan={type:'cart', color, size};
+    lastScan={type:'cart', color:colorKey, size};
   }
-  showLastScan(color,size);
+  showLastScan(colorKey,size);
+}
+
+/* ---------- swatch helper ---------- */
+function swatchHtml(color, extraStyle){
+  if(color==='uncategorized'){
+    return `<span class="swatch uncategorized" style="${extraStyle||''}"></span>`;
+  }
+  return `<span class="swatch" style="background:rgb(${TOY_COLORS[color].join(',')});${extraStyle||''}"></span>`;
 }
 
 /* ---------- last-scan correction ---------- */
 function showLastScan(color,size){
   const card=document.getElementById('lastScanCard');
   card.style.display='block';
-  document.getElementById('lastSwatch').style.background='rgb('+TOY_COLORS[color].join(',')+')';
-  document.getElementById('lastLabel').textContent=color;
+
+  const swatchEl=document.getElementById('lastSwatch');
+  const labelEl=document.getElementById('lastLabel');
+  if(color==='uncategorized'){
+    swatchEl.className='swatch uncategorized';
+    swatchEl.style.background='';
+    labelEl.textContent='uncategorized';
+    labelEl.classList.add('uncategorized-label');
+  }else{
+    swatchEl.className='swatch';
+    swatchEl.style.background='rgb('+TOY_COLORS[color].join(',')+')';
+    labelEl.textContent=color;
+    labelEl.classList.remove('uncategorized-label');
+  }
   document.getElementById('lastSizeTag').textContent=size;
-  const select=document.getElementById('lastSizeSelect');
-  const options=sizesByColor[color]||[];
-  select.innerHTML=options.map(s=>`<option value="${s}" ${s===size?'selected':''}>${s}</option>`).join('');
-  document.getElementById('dotInstruction').textContent='';
+
+  const colorSelect=document.getElementById('lastColorSelect');
+  const colorOptions=Object.keys(TOY_COLORS);
+  colorSelect.innerHTML=
+    `<option value="uncategorized" ${color==='uncategorized'?'selected':''}>uncategorized</option>` +
+    colorOptions.map(c=>`<option value="${c}" ${c===color?'selected':''}>${c}</option>`).join('');
+
+  const sizeSelect=document.getElementById('lastSizeSelect');
+  const sizeOptions=color!=='uncategorized' ? (sizesByColor[color]||[]) : calibrationOrder;
+  sizeSelect.innerHTML=sizeOptions.map(s=>`<option value="${s}" ${s===size?'selected':''}>${s}</option>`).join('');
+
+  document.getElementById('dotInstruction').textContent=color==='uncategorized'
+    ? 'No dot detected — pick the correct colour above, or stick a matching-colour dot on this item for next time.'
+    : '';
 }
 
-function overrideLastScan(newSize){
+function overrideLastScanColor(newColor){
+  if(!lastScan) return;
+  const oldColor=lastScan.color, size=lastScan.size;
+  if(newColor===oldColor) return;
+  const price=priceFor(newColor,size)||0;
+
+  if(lastScan.type==='tally'){
+    const oldKey=oldColor+'|'+size, newKey=newColor+'|'+size;
+    tally[oldKey]=(tally[oldKey]||1)-1; if(tally[oldKey]<=0) delete tally[oldKey];
+    tally[newKey]=(tally[newKey]||0)+1;
+    lastScan.key=newKey; lastScan.color=newColor;
+    renderTally();
+  }else{
+    let oldLine=cart.find(c=>c.color===oldColor && c.size===size);
+    if(oldLine){ oldLine.qty--; if(oldLine.qty<=0) cart=cart.filter(c=>c!==oldLine); }
+    let newLine=cart.find(c=>c.color===newColor && c.size===size);
+    if(newLine) newLine.qty++; else cart.push({color:newColor, size, price, qty:1});
+    lastScan.color=newColor;
+    renderCart();
+  }
+
+  showLastScan(newColor, size);
+  if(newColor!=='uncategorized'){
+    document.getElementById('dotInstruction').textContent=
+      `Tip: stick a ${newColor} dot on this item so it scans as "${newColor}" automatically next time.`;
+  }
+}
+
+function overrideLastScanSize(newSize){
   if(!lastScan) return;
   const {color}=lastScan;
   const oldSize=lastScan.size;
@@ -763,10 +802,6 @@ function overrideLastScan(newSize){
   }
 
   document.getElementById('lastSizeTag').textContent=newSize;
-  const dot=SIZE_DOT_COLORS[newSize];
-  document.getElementById('dotInstruction').textContent=dot
-    ? `Tip: stick a ${dot.name} dot on this item so it scans as "${newSize}" automatically next time. If ${dot.name} is too close to this toy's own colour, skip the dot and just use this dropdown again next time.`
-    : `No reserved dot colour is set up for "${newSize}" — use this dropdown to correct it each time.`;
 }
 
 /* ---------- inventory ---------- */
@@ -777,7 +812,7 @@ function renderTally(){
   el.innerHTML=keys.map(k=>{
     const [color,size]=k.split('|');
     return `<div class="row">
-      <span><span class="swatch" style="background:rgb(${TOY_COLORS[color].join(',')})"></span>${color}<span class="size-tag">${size}</span></span>
+      <span>${swatchHtml(color)}${color}<span class="size-tag">${size}</span></span>
       <span style="font-weight:600;">${tally[k]}</span>
     </div>`;
   }).join('');
@@ -797,7 +832,7 @@ function renderCart(){
   if(!cart.length){ el.innerHTML='<p class="muted">No items scanned yet.</p>'; document.getElementById('cartTotal').textContent=formatAud(0); return; }
   el.innerHTML=cart.map(c=>`
     <div class="row">
-      <span><span class="swatch" style="background:rgb(${TOY_COLORS[c.color].join(',')})"></span>${c.color}<span class="size-tag">${c.size}</span> x${c.qty}</span>
+      <span>${swatchHtml(c.color)}${c.color}<span class="size-tag">${c.size}</span> x${c.qty}</span>
       <span>${formatAud(c.price*c.qty)}</span>
     </div>`).join('');
   document.getElementById('cartTotal').textContent=formatAud(cartTotal());
