@@ -8,26 +8,39 @@ details, see `README.md`.
 Do this once when you first start using the app (or any time you move the camera, change
 the lighting, or want to refresh your size calibration).
 
-### 1. Open the app and start the camera
-1. Open the app's web address in your browser.
-2. Click **Start camera**.
-3. Allow camera access when your browser asks — this only appears the first time.
+The app has three tabs: **Setup**, **Inventory**, and **Checkout**. The camera preview is
+always visible on the left regardless of which tab you're on, but the setup controls
+(checklist, config file, calibration) only appear on the **Setup** tab — switch to
+Inventory or Checkout once setup is complete to start scanning for real.
 
-### 2. Capture the background
+The **Setup checklist** card tracks four steps and shows a "done" / "pending" badge for
+each. **Scanning can't start until all four are done** — this is intentional, so you can't
+accidentally scan before the app is actually ready. Work through the steps below in
+order; the checklist updates itself as you go.
+
+### 1. Start the camera
+1. Click **Start camera** (it becomes **Stop camera** once the feed is live).
+2. Allow camera access when your browser asks — this only appears the first time.
+3. On phones/tablets, the app requests the **rear camera** by default. If it opens the
+   wrong one, click **Switch camera** to flip between rear and front — this restarts the
+   feed, so recapture the background afterwards.
+4. Click **Stop camera** any time to release the webcam (e.g. when you're done for the
+   day). Starting it again will ask you to recapture the background, since the camera may
+   have moved.
+
+### 2. Capture the empty background
 1. Clear the tray or table in front of the camera completely — no toys, no hands.
 2. Click **Capture empty background**.
-3. The status pill will change to "scanning" — the app is now ready to detect objects.
 
-> Re-capture the background whenever you move or bump the camera, change the lighting, or
-> notice objects aren't being detected properly.
+> Redo this step whenever you move or bump the camera, or change the lighting — and
+> whenever you've stopped and restarted the camera.
 
 ### 3. Load the config file
 1. Under **Config file**, click the file picker and select your `config.csv`.
 2. Check the message underneath confirms how many rows were loaded.
 
 If you're hosting the app with `config.csv` sitting next to `index.html`, it tries to load
-automatically when the page opens — you only need to load it manually if that doesn't
-happen, or you want to swap in an updated file.
+automatically when the page opens.
 
 ### 4. Calibrate sizes
 The app doesn't use fixed measurements for "small", "medium", "large" (or whatever size
@@ -37,7 +50,8 @@ names are in your config) — instead, you show it one example of each:
    in it.
 2. Hold up one toy that represents "small" and click **Capture example** next to it.
 3. Repeat for "medium", "large", and any other sizes in your list.
-4. Once all sizes show a green "captured" badge, you're ready to scan.
+4. Once every size shows a green "done" badge (both here and in the checklist above),
+   setup is complete.
 
 Every toy scanned afterwards is matched to whichever calibrated size it's closest to —
 there's no in-between gap where an object doesn't fit anywhere.
@@ -46,6 +60,20 @@ there's no in-between gap where an object doesn't fit anywhere.
 download a small `calibration.json` file. Next session, use **Load calibration** to load
 it back in instead of holding up examples again. Only recalibrate if you've noticeably
 changed the camera's distance or angle from the scanning area.
+
+### Starting, pausing, and resuming scanning
+Once all four checklist steps show "done", the **Start scanning** button becomes
+available at the top of the checklist card (on the **Setup** tab). Click it to begin —
+switch to the **Inventory** or **Checkout** tab and the camera will now count or price
+objects as you hold them up; the live camera preview stays visible on every tab, so you
+can always see what's being detected.
+
+You can go back to the **Setup** tab and click **Pause scanning** at any time (e.g. to
+answer a question, deal with a customer query, or step away) without losing any setup —
+background, config, and calibration all stay in memory, so clicking **Start scanning**
+again picks straight back up. You only need to redo a step if you actually change
+something (moved the camera, loaded a different config, etc.) — the checklist will tell
+you if a step needs redoing by switching back to "pending".
 
 ### Updating config.csv
 
@@ -123,6 +151,24 @@ not a fault in the app.
 
 This is worth doing for toys you'll scan repeatedly (e.g. at both intake and checkout);
 for a one-off correction, the dropdown alone is enough.
+
+## Understanding the status pill while scanning
+
+The small pill on top of the camera view tells you exactly what the app is doing at each
+moment — it's worth knowing what each message means so scanning feels predictable rather
+than mysterious:
+
+| Status | What it means |
+|---|---|
+| *place an item* | Nothing is in frame yet — go ahead and place/hold up a toy. |
+| *movement detected — hold still* | Something is currently moving (a hand placing or removing an item). The app deliberately does **not** try to read anything while this is showing. |
+| *settling…* | Movement has just stopped; the app is confirming the scene is genuinely still before trusting a reading. |
+| *reading…* | The scene is still and the app is actively classifying — this only lasts a moment. |
+| *counted: [colour] · [size] — remove item to continue* | The item has been counted/priced. Remove it from frame before the next item will be counted. |
+| *scanning — no toy colour detected* | Something is present and still, but its colour couldn't be confidently identified — try adjusting lighting or the item's position. |
+
+This sequence exists specifically so an item is never measured *while* a hand is placing
+or picking it up — only once everything has settled and stayed still for a moment.
 
 ## Usage A — Inventory
 

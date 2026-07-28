@@ -14,10 +14,40 @@ Everything runs client-side in the browser. No server, no backend, no build step
 - `index.html` — the whole app (camera, detection logic, calibration, both modes).
 - `config.csv` — editable list of `color,size,price` rows in AUD.
 
+## Setup flow
+
+The app has three tabs: **Setup**, **Inventory**, **Checkout**. The camera preview is
+always visible regardless of tab, but the setup controls (checklist, config loader,
+calibration) live only on the **Setup** tab, keeping the Inventory/Checkout views
+uncluttered once you're up and running.
+
+The Setup tab walks the operator through four gated steps — start camera, capture
+background, load config, calibrate sizes — via a checklist card, and **won't allow
+scanning to start until all four show "done"**. This avoids the failure mode of scanning
+starting before calibration exists. Scanning itself can be paused and resumed freely
+afterwards without losing any setup state; only actually changing something (camera
+restarted, new config loaded) resets the relevant step back to "pending".
+
 ## How classification works
 
-- **Colour** is matched against a fixed palette (`red, blue, green, yellow, orange,
-  purple`) — nearest match by average colour of the detected object.
+- **Motion-gated detection**: every frame is checked against both the empty background
+  (is anything here?) and the *previous* frame (is anything currently moving?). Colour
+  and size are only ever measured once the scene has been still for a short run of
+  frames — this is what stops a hand mid-placement or mid-removal from being read as the
+  item itself. The status pill reflects this directly: "place an item" → "movement
+  detected — hold still" → "settling…" → "counted: … — remove item to continue".
+- **Colour and size are measured together**: the app finds foreground pixels (ones that
+  differ from the captured background) whose **hue** closely matches one of the six toy
+  colours (hue, not raw RGB, so lighting/brightness changes don't throw it off — a red
+  toy in shadow is still "red" in hue even though its RGB values got darker). Very
+  washed-out or very dark pixels are excluded from matching entirely, since they're not
+  reliably any particular colour. Whichever colour has the most matching pixels is the
+  detected colour.
+- The **size measurement** is the bounding box drawn around just those colour-matched
+  pixels — not the raw foreground/diff region. This is what keeps a hand/arm holding the
+  toy from inflating the measurement (skin tone doesn't match any toy colour, so it's
+  excluded entirely), while still capturing the toy's true physical extent even if part
+  of it is a different colour (e.g. wheels, trim).
 - **Size** is matched by nearest calibrated example, not fixed pixel ranges — see
   "Calibrating sizes" below. There's no gap or undefined zone: every object always maps
   to whichever calibrated size it's closest to.
@@ -69,10 +99,24 @@ green,large,5.00
 
 ## Known limitations (v1)
 
-- Detection is background-diff + single-largest-blob — works best with a plain, static
-  background and one object in frame at a time.
-- Colour classification is nearest-match against a small fixed palette; multi-toned toys
-  are classified by their average colour.
+- Detection is background-diff + colour-matched pixel counting — works best with a
+  plain, static background and one object in frame at a time.
+- Colour classification picks whichever of the six toy colours has the most matching
+  foreground pixels; multi-toned toys are classified by their dominant colour patch.
+  If a toy's actual colour is very close to skin tone (e.g. a pale orange/tan toy), the
+  hand-exclusion logic may undercount it — hold more of the toy's coloured surface toward
+  the camera in that case.
+- A count only commits once a colour/size reading wins a majority within a short rolling
+  window of recent frames (not every single frame needs to agree) — this is more
+  tolerant of the odd noisy frame than requiring an unbroken streak, but detection is
+  still a lightweight heuristic (not a trained ML model), so lighting and background
+  still meaningfully affect accuracy. For best results: even, consistent lighting, and a
+  background/mat that contrasts clearly with all six toy colours and with skin tone (a
+  plain dark mat works well).
+- A genuinely more accurate approach would use a trained ML model (e.g. TensorFlow.js)
+  to detect the object directly rather than inferring it from colour/background
+  differences — a larger rebuild than this version, and out of scope for now, but worth
+  considering if heuristic accuracy proves insufficient in practice.
 - Dot detection assumes each reserved size colour never otherwise appears on your toys.
   The defaults are fluorescent/neon tones chosen to be unusual for moulded toy plastic,
   but if a specific toy clashes anyway, skip the dot for that item and use the dropdown

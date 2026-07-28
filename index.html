@@ -210,6 +210,9 @@ const DIFF_THRESHOLD=40;
 const EMPTY_AREA_THRESHOLD=250;
 const HISTORY_LENGTH=8; // frames considered in the rolling majority vote
 const REQUIRED_MATCHES=5; // how many of those frames must agree to commit a count
+const MOTION_DIFF_THRESHOLD=30; // per-pixel diff between consecutive frames to count as "moving"
+const MOTION_PIXEL_THRESHOLD=80; // minimum moving pixels to consider the scene currently in motion
+const SETTLE_FRAMES_REQUIRED=3; // consecutive low-motion frames required before trusting a reading
 const DOT_MATCH_THRESHOLD=60; // colour distance to count a pixel as a dot
 const DOT_MIN_PIXELS=5; // minimum matching pixels (at working resolution) to trust a dot detection
 // Toy colour matching uses HUE rather than raw RGB distance, since hue stays roughly
@@ -237,6 +240,9 @@ let cart=[]; // {color,size,price,qty}
 let transactions=[];
 let detectionHistory=[]; // rolling window of recent per-frame detection keys
 let lastCountedKey=null; // prevents recounting the same still-in-frame object
+let previousFrameData=null; // last frame's pixels, for frame-to-frame motion detection
+let scanState='empty'; // 'empty' | 'moving' | 'settling' | 'settled'
+let settledFrames=0; // consecutive low-motion frames seen so far
 let lastScan=null; // {color,size,tallyKey or cartKey}
 let pendingCapture=null; // size name waiting for a calibration capture
 
@@ -306,6 +312,7 @@ function stopCamera(){
   if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
   video.classList.add('hidden');
   backgroundData=null; // camera position/framing may change, so require a fresh background capture
+  previousFrameData=null; scanState='empty'; settledFrames=0; detectionHistory=[]; lastCountedKey=null;
   document.getElementById('statusPill').textContent='camera off';
   document.getElementById('btnStartCam').textContent='Start camera';
   document.getElementById('btnSwitchCam').disabled=true;
@@ -335,6 +342,7 @@ function captureBackground(){
   if(!stream) return;
   workCtx.drawImage(video,0,0,W,H);
   backgroundData=workCtx.getImageData(0,0,W,H).data.slice();
+  previousFrameData=null; scanState='empty'; settledFrames=0; detectionHistory=[]; lastCountedKey=null;
   document.getElementById('statusPill').textContent='background captured';
   updateSetupState();
 }
@@ -351,6 +359,7 @@ function toggleScanning(){
 function beginScanning(){
   if(!canScan()) return;
   if(detectionTimer) clearInterval(detectionTimer);
+  previousFrameData=null; scanState='empty'; settledFrames=0; detectionHistory=[]; lastCountedKey=null;
   detectionTimer=setInterval(processFrame,150);
   document.getElementById('statusPill').textContent='scanning';
   document.getElementById('btnToggleScan').textContent='Pause scanning';
@@ -488,6 +497,23 @@ function foregroundMask(data){
   return {fg, count, minX, minY, maxX, maxY, bboxArea:(maxX-minX)*(maxY-minY), avgColor:count?[sumR/count,sumG/count,sumB/count]:[0,0,0]};
 }
 
+// Compares the current frame to the PREVIOUS frame (not the background) to detect
+// whether anything is currently moving — e.g. a hand placing or removing an item.
+// This is deliberately separate from the background diff above: background diff answers
+// "is something here that wasn't in the empty scene", motion diff answers "is anything
+// changing right now". We only trust a reading once motion has stopped.
+function motionPixelCount(current, previous){
+  if(!previous) return 0;
+  let count=0;
+  for(let idx=0; idx<W*H; idx++){
+    const i=idx*4;
+    const dr=current[i]-previous[i], dg=current[i+1]-previous[i+1], db=current[i+2]-previous[i+2];
+    const diff=Math.sqrt(dr*dr+dg*dg+db*db);
+    if(diff>MOTION_DIFF_THRESHOLD) count++;
+  }
+  return count;
+}
+
 function detectDotSize(data, minX, minY, maxX, maxY){
   // Counts pixels within the bbox matching each reserved size-colour; returns whichever
   // size has the most matching pixels, as long as it clears the minimum pixel count.
@@ -595,11 +621,34 @@ function processFrame(){
   overlayCtx.clearRect(0,0,overlay.width,overlay.height);
   const scaleX=overlay.width/W, scaleY=overlay.height/H;
 
+  const motionCount=motionPixelCount(data, previousFrameData);
+  previousFrameData=data.slice();
+
   if(mask.count<EMPTY_AREA_THRESHOLD){
-    detectionHistory=[]; lastCountedKey=null;
-    document.getElementById('statusPill').textContent='scanning — waiting for object';
+    scanState='empty'; settledFrames=0; detectionHistory=[]; lastCountedKey=null;
+    document.getElementById('statusPill').textContent='place an item';
     return;
   }
+
+  if(motionCount>MOTION_PIXEL_THRESHOLD){
+    if(scanState!=='moving') detectionHistory=[]; // discard stale votes once motion resumes
+    scanState='moving'; settledFrames=0;
+    overlayCtx.strokeStyle='#a3402f'; overlayCtx.lineWidth=2;
+    overlayCtx.strokeRect(mask.minX*scaleX, mask.minY*scaleY, (mask.maxX-mask.minX)*scaleX, (mask.maxY-mask.minY)*scaleY);
+    document.getElementById('statusPill').textContent='movement detected — hold still';
+    return;
+  }
+
+  settledFrames++;
+  if(settledFrames<SETTLE_FRAMES_REQUIRED){
+    scanState='settling';
+    overlayCtx.strokeStyle='#c9a227'; overlayCtx.lineWidth=2;
+    overlayCtx.strokeRect(mask.minX*scaleX, mask.minY*scaleY, (mask.maxX-mask.minX)*scaleX, (mask.maxY-mask.minY)*scaleY);
+    document.getElementById('statusPill').textContent='settling…';
+    return;
+  }
+
+  scanState='settled';
 
   const {colorName, box, boxArea}=classifyColorAndSize(data, mask.fg);
 
@@ -645,11 +694,13 @@ function processFrame(){
   for(const [k,c] of Object.entries(tally)){ if(c>modeCount){ modeCount=c; modeKey=k; } }
 
   if(modeCount>=REQUIRED_MATCHES && modeKey!==lastCountedKey){
-    document.getElementById('statusPill').textContent='counted: '+label;
+    document.getElementById('statusPill').textContent='counted: '+label+' — remove item to continue';
     lastCountedKey=modeKey;
     registerDetection(colorName, sizeName);
+  }else if(modeKey===lastCountedKey){
+    document.getElementById('statusPill').textContent='counted: '+label+' — remove item to continue';
   }else{
-    document.getElementById('statusPill').textContent='holding steady…';
+    document.getElementById('statusPill').textContent='reading…';
   }
 }
 
