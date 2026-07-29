@@ -234,6 +234,7 @@ let stream=null, backgroundLuma=null, detectionTimer=null;
 let currentFacingMode='environment'; // request the rear camera by default on mobile
 let config=[]; // {color,size,price}
 let sizesByColor={}; // color -> [size,...] in config order
+let configColors=[]; // colours actually present in config.csv
 let calibrationOrder=[]; // unique size names, canonical order first
 let calibration={}; // size -> reference silhouette pixel count
 let mode='inventory'; // which scan target: 'inventory' or 'checkout'
@@ -426,6 +427,11 @@ function parseConfig(text){
     if(!sizesByColor[r.color]) sizesByColor[r.color]=[];
     if(!sizesByColor[r.color].includes(r.size)) sizesByColor[r.color].push(r.size);
   });
+  // Only colours that actually appear in config.csv are ever valid — used to restrict
+  // both automatic dot detection and the manual colour dropdown, so a colour with no
+  // price row (e.g. "orange" when only red/blue/green are configured) can never be
+  // detected or selected.
+  configColors=Object.keys(sizesByColor);
 
   const allSizes=[...new Set(config.map(r=>r.size))];
   calibrationOrder=[
@@ -579,12 +585,15 @@ function nearestColorWithDist(rgb){
 // case — the item just has no dot yet, and colour will need a manual pick instead).
 function detectDotColor(data, minX, minY, maxX, maxY){
   const counts={};
-  for(const name in TOY_COLORS) counts[name]=0;
+  for(const name of configColors) counts[name]=0;
   for(let y=minY; y<=maxY; y++){
     for(let x=minX; x<=maxX; x++){
       const i=(y*W+x)*4;
       const {name}=nearestColorWithDist([data[i], data[i+1], data[i+2]]);
-      if(name) counts[name]++;
+      // Only count pixels matching a colour that's actually configured — a dot whose
+      // nearest hue is, say, orange should never register at all if orange has no
+      // price row in config.csv, rather than being misattributed to some other colour.
+      if(name && configColors.includes(name)) counts[name]++;
     }
   }
   let best=null, bestCount=0;
@@ -737,13 +746,16 @@ function showLastScan(color,size){
   document.getElementById('lastSizeTag').textContent=size;
 
   const colorSelect=document.getElementById('lastColorSelect');
-  const colorOptions=Object.keys(TOY_COLORS);
   colorSelect.innerHTML=
     `<option value="uncategorized" ${color==='uncategorized'?'selected':''}>uncategorized</option>` +
-    colorOptions.map(c=>`<option value="${c}" ${c===color?'selected':''}>${c}</option>`).join('');
+    configColors.map(c=>`<option value="${c}" ${c===color?'selected':''}>${c}</option>`).join('');
 
+  // Size is measured independently of colour, so its options are always every
+  // calibrated size — never filtered by colour. Filtering by colour previously caused
+  // the dropdown to silently hide the true detected size (and default to some other
+  // value) whenever that colour+size combo had no price row in config.csv.
   const sizeSelect=document.getElementById('lastSizeSelect');
-  const sizeOptions=color!=='uncategorized' ? (sizesByColor[color]||[]) : calibrationOrder;
+  const sizeOptions=calibrationOrder;
   sizeSelect.innerHTML=sizeOptions.map(s=>`<option value="${s}" ${s===size?'selected':''}>${s}</option>`).join('');
 
   document.getElementById('dotInstruction').textContent=color==='uncategorized'
