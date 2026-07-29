@@ -146,15 +146,9 @@
             <span id="lastLabel">—</span>
             <span class="size-tag" id="lastSizeTag"></span>
           </div>
-          <div style="display:flex; gap:14px; flex-wrap:wrap;">
-            <span>
-              <span class="muted" style="margin-right:6px;">Colour</span>
-              <select id="lastColorSelect" onchange="overrideLastScanColor(this.value)"></select>
-            </span>
-            <span>
-              <span class="muted" style="margin-right:6px;">Size</span>
-              <select id="lastSizeSelect" onchange="overrideLastScanSize(this.value)"></select>
-            </span>
+          <div>
+            <span class="muted" style="margin-right:6px;">Not right?</span>
+            <select id="lastComboSelect" onchange="overrideLastScan(this.value)"></select>
           </div>
         </div>
         <p class="muted" id="dotInstruction" style="margin:10px 0 0;"></p>
@@ -226,7 +220,9 @@ const SETTLE_FRAMES_REQUIRED=3; // consecutive low-motion frames required before
 const HUE_MATCH_THRESHOLD=30; // degrees of hue difference to still count as a match
 const MIN_SATURATION=0.28; // 0-1, below this a pixel is too washed-out to classify
 const MIN_VALUE=0.18; // 0-1, below this a pixel is too dark to classify
-const MIN_DOT_COLOR_PIXELS=12; // minimum matching pixels (at working resolution) to trust a dot reading
+const MIN_DOT_BLOB_PIXELS=30; // minimum CONNECTED pixels (one solid blob, not scattered) to trust a dot reading
+const DOT_ASPECT_MIN=0.4; // width/height ratio bounds a genuine round sticker should fall within
+const DOT_ASPECT_MAX=2.5; // — filters out thin rings/reflections (e.g. a camera lens rim)
 
 /* ---------- state ---------- */
 let video, overlay, overlayCtx, workCanvas, workCtx;
@@ -583,22 +579,55 @@ function nearestColorWithDist(rgb){
 // colour frame (not the grayscale silhouette) for a small patch matching one of the
 // six category colours; returns null if no confident dot is found (a common, expected
 // case — the item just has no dot yet, and colour will need a manual pick instead).
-function detectDotColor(data, minX, minY, maxX, maxY){
-  const counts={};
-  for(const name of configColors) counts[name]=0;
+// Finds the largest CONNECTED blob of a boolean mask within a bounding box (flood fill).
+// Using connectivity (not just a raw pixel count) is what rejects incidental colourful
+// details on the object itself — a thin lens-ring reflection or a small logo tends to be
+// either too small, too scattered, or too thin/elongated to pass as a genuine sticker.
+function findLargestBlob(mask, minX, minY, maxX, maxY){
+  const visited=new Uint8Array(W*H);
+  let bestSize=0, bestBox=null;
   for(let y=minY; y<=maxY; y++){
     for(let x=minX; x<=maxX; x++){
-      const i=(y*W+x)*4;
-      const {name}=nearestColorWithDist([data[i], data[i+1], data[i+2]]);
-      // Only count pixels matching a colour that's actually configured — a dot whose
-      // nearest hue is, say, orange should never register at all if orange has no
-      // price row in config.csv, rather than being misattributed to some other colour.
-      if(name && configColors.includes(name)) counts[name]++;
+      const idx=y*W+x;
+      if(!mask[idx] || visited[idx]) continue;
+      let size=0, bMinX=x, bMaxX=x, bMinY=y, bMaxY=y;
+      const stack=[idx]; visited[idx]=1;
+      while(stack.length){
+        const cur=stack.pop(); size++;
+        const cy=Math.floor(cur/W), cx=cur%W;
+        if(cx<bMinX)bMinX=cx; if(cx>bMaxX)bMaxX=cx; if(cy<bMinY)bMinY=cy; if(cy>bMaxY)bMaxY=cy;
+        const neighbours=[[cx+1,cy],[cx-1,cy],[cx,cy+1],[cx,cy-1]];
+        for(const [nx,ny] of neighbours){
+          if(nx<minX||nx>maxX||ny<minY||ny>maxY) continue;
+          const nIdx=ny*W+nx;
+          if(mask[nIdx] && !visited[nIdx]){ visited[nIdx]=1; stack.push(nIdx); }
+        }
+      }
+      if(size>bestSize){ bestSize=size; bestBox={minX:bMinX,maxX:bMaxX,minY:bMinY,maxY:bMaxY}; }
     }
   }
-  let best=null, bestCount=0;
-  for(const [name, count] of Object.entries(counts)){ if(count>bestCount){ bestCount=count; best=name; } }
-  return bestCount>=MIN_DOT_COLOR_PIXELS ? best : null;
+  return {size:bestSize, box:bestBox};
+}
+
+function detectDotColor(data, minX, minY, maxX, maxY){
+  let best=null, bestSize=0;
+  for(const name of configColors){
+    const mask=new Uint8Array(W*H);
+    for(let y=minY; y<=maxY; y++){
+      for(let x=minX; x<=maxX; x++){
+        const idx=y*W+x, i=idx*4;
+        const {name:matched}=nearestColorWithDist([data[i], data[i+1], data[i+2]]);
+        if(matched===name) mask[idx]=1;
+      }
+    }
+    const blob=findLargestBlob(mask, minX, minY, maxX, maxY);
+    if(blob.size<MIN_DOT_BLOB_PIXELS) continue;
+    const w=blob.box.maxX-blob.box.minX+1, h=blob.box.maxY-blob.box.minY+1;
+    const aspect=w/h;
+    if(aspect<DOT_ASPECT_MIN || aspect>DOT_ASPECT_MAX) continue; // too thin/elongated to be a sticker
+    if(blob.size>bestSize){ bestSize=blob.size; best=name; }
+  }
+  return best;
 }
 
 function nearestCalibratedSize(area){
@@ -745,75 +774,48 @@ function showLastScan(color,size){
   }
   document.getElementById('lastSizeTag').textContent=size;
 
-  const colorSelect=document.getElementById('lastColorSelect');
-  colorSelect.innerHTML=
+  // Single dropdown, built directly from config.csv rows — every option is therefore
+  // guaranteed to be an actually-priced combination, labelled e.g. "small — red" so the
+  // size/colour pairing is obvious at a glance. "uncategorized" is always available too.
+  const select=document.getElementById('lastComboSelect');
+  const currentValue=size+'|'+color;
+  const options=config.map(r=>`<option value="${r.size}|${r.color}" ${(r.size+'|'+r.color)===currentValue?'selected':''}>${r.size} — ${r.color}</option>`);
+  select.innerHTML=
     `<option value="uncategorized" ${color==='uncategorized'?'selected':''}>uncategorized</option>` +
-    configColors.map(c=>`<option value="${c}" ${c===color?'selected':''}>${c}</option>`).join('');
-
-  // Size is measured independently of colour, so its options are always every
-  // calibrated size — never filtered by colour. Filtering by colour previously caused
-  // the dropdown to silently hide the true detected size (and default to some other
-  // value) whenever that colour+size combo had no price row in config.csv.
-  const sizeSelect=document.getElementById('lastSizeSelect');
-  const sizeOptions=calibrationOrder;
-  sizeSelect.innerHTML=sizeOptions.map(s=>`<option value="${s}" ${s===size?'selected':''}>${s}</option>`).join('');
+    options.join('');
 
   document.getElementById('dotInstruction').textContent=color==='uncategorized'
-    ? 'No dot detected — pick the correct colour above, or stick a matching-colour dot on this item for next time.'
+    ? 'No dot detected — pick the correct size/colour above, or stick a matching-colour dot on this item for next time.'
     : '';
 }
 
-function overrideLastScanColor(newColor){
+function overrideLastScan(value){
   if(!lastScan) return;
-  const oldColor=lastScan.color, size=lastScan.size;
-  if(newColor===oldColor) return;
-  const price=priceFor(newColor,size)||0;
+  const oldColor=lastScan.color, oldSize=lastScan.size;
+  const [newSize, newColor]=value==='uncategorized' ? [oldSize,'uncategorized'] : value.split('|');
+  if(newColor===oldColor && newSize===oldSize) return;
+  const price=newColor!=='uncategorized' ? (priceFor(newColor,newSize)||0) : 0;
 
   if(lastScan.type==='tally'){
-    const oldKey=oldColor+'|'+size, newKey=newColor+'|'+size;
+    const oldKey=oldColor+'|'+oldSize, newKey=newColor+'|'+newSize;
     tally[oldKey]=(tally[oldKey]||1)-1; if(tally[oldKey]<=0) delete tally[oldKey];
     tally[newKey]=(tally[newKey]||0)+1;
-    lastScan.key=newKey; lastScan.color=newColor;
+    lastScan.key=newKey; lastScan.color=newColor; lastScan.size=newSize;
     renderTally();
   }else{
-    let oldLine=cart.find(c=>c.color===oldColor && c.size===size);
+    let oldLine=cart.find(c=>c.color===oldColor && c.size===oldSize);
     if(oldLine){ oldLine.qty--; if(oldLine.qty<=0) cart=cart.filter(c=>c!==oldLine); }
-    let newLine=cart.find(c=>c.color===newColor && c.size===size);
-    if(newLine) newLine.qty++; else cart.push({color:newColor, size, price, qty:1});
-    lastScan.color=newColor;
+    let newLine=cart.find(c=>c.color===newColor && c.size===newSize);
+    if(newLine) newLine.qty++; else cart.push({color:newColor, size:newSize, price, qty:1});
+    lastScan.color=newColor; lastScan.size=newSize;
     renderCart();
   }
 
-  showLastScan(newColor, size);
+  showLastScan(newColor, newSize);
   if(newColor!=='uncategorized'){
     document.getElementById('dotInstruction').textContent=
       `Tip: stick a ${newColor} dot on this item so it scans as "${newColor}" automatically next time.`;
   }
-}
-
-function overrideLastScanSize(newSize){
-  if(!lastScan) return;
-  const {color}=lastScan;
-  const oldSize=lastScan.size;
-  if(newSize===oldSize) return;
-
-  if(lastScan.type==='tally'){
-    const oldKey=color+'|'+oldSize, newKey=color+'|'+newSize;
-    tally[oldKey]=(tally[oldKey]||1)-1; if(tally[oldKey]<=0) delete tally[oldKey];
-    tally[newKey]=(tally[newKey]||0)+1;
-    lastScan.key=newKey; lastScan.size=newSize;
-    renderTally();
-  }else{
-    let oldLine=cart.find(c=>c.color===color && c.size===oldSize);
-    if(oldLine){ oldLine.qty--; if(oldLine.qty<=0) cart=cart.filter(c=>c!==oldLine); }
-    const price=priceFor(color,newSize)||0;
-    let newLine=cart.find(c=>c.color===color && c.size===newSize);
-    if(newLine) newLine.qty++; else cart.push({color,size:newSize,price,qty:1});
-    lastScan.size=newSize;
-    renderCart();
-  }
-
-  document.getElementById('lastSizeTag').textContent=newSize;
 }
 
 /* ---------- inventory ---------- */
